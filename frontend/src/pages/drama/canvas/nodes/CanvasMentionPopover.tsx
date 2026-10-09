@@ -93,7 +93,7 @@ export function CanvasMentionPopover({
         </button>
       </div>
       {filtered.length === 0 ? (
-        <div className="fc-mention-empty">无匹配节点 · 先创建角色/场景</div>
+        <div className="fc-mention-empty">无已连线节点 · 先把角色/场景连到本节点</div>
       ) : (
         <ul className="fc-mention-list">
           {filtered.map((item, index) => {

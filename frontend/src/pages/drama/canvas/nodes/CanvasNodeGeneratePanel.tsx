@@ -38,8 +38,8 @@ function panelCopy(kind: CanvasNodeKind, hasMedia: boolean) {
   if (kind === 'video') {
     return {
       title: hasMedia ? '编辑并重生视频' : 'AI 生成视频',
-      placeholder: '描述视频画面、镜头运动与氛围；键入 @ 引用角色/场景…',
-      hint: 'Enter 生成视频 · @ 引用 · Shift+Enter 换行',
+      placeholder: '描述视频画面、镜头运动与氛围；键入 @ 引用已连线节点…',
+      hint: 'Enter 生成视频 · @ 仅可引用已连线节点 · Shift+Enter 换行',
     }
   }
   if (kind === 'character') {
@@ -58,8 +58,8 @@ function panelCopy(kind: CanvasNodeKind, hasMedia: boolean) {
   }
   return {
     title: hasMedia ? '编辑并重生图片' : 'AI 生图',
-    placeholder: '描述画面内容；键入 @ 引用角色/场景…',
-    hint: 'Enter 生成 · @ 引用 · Shift+Enter 换行',
+    placeholder: '描述画面内容；键入 @ 引用已连线节点…',
+    hint: 'Enter 生成 · @ 仅可引用已连线节点 · Shift+Enter 换行',
   }
 }
 
@@ -92,6 +92,7 @@ export function CanvasNodeGeneratePanel({
     updateNodePrompt,
     updateNodeVideoOptions,
     mentionableNodes,
+    edges,
   } = useCanvasStore()
   const [prompt, setPrompt] = useState(() => sanitizePrompt(defaultPrompt, kind, label))
   /*
@@ -122,11 +123,17 @@ export function CanvasNodeGeneratePanel({
   const allowMention = kind === 'video' || kind === 'image'
   const isVideo = kind === 'video'
 
-  /* 可引用：排除当前节点自身 */
-  const mentionItems = useMemo(
-    () => mentionableNodes.filter((n) => n.nodeId !== nodeId),
-    [mentionableNodes, nodeId],
-  )
+  /* 可引用：仅已连线邻居（双向），并排除自身 */
+  const mentionItems = useMemo(() => {
+    const neighborIds = new Set<string>()
+    for (const edge of edges) {
+      if (edge.source === nodeId) neighborIds.add(edge.target)
+      if (edge.target === nodeId) neighborIds.add(edge.source)
+    }
+    return mentionableNodes.filter(
+      (n) => n.nodeId !== nodeId && neighborIds.has(n.nodeId),
+    )
+  }, [edges, mentionableNodes, nodeId])
 
   const lastNodeIdRef = useRef(nodeId)
 

@@ -108,7 +108,7 @@ export function SeedanceRulesModal({ open, onClose }: Props) {
               */}
             </ol>
             <p className="seedance-rules-note">
-              系统默认开启 <code>generate_audio</code>：有口播意图时 Seedance 原生配音并烧录字幕；纯画面镜仅环境音、不烧字幕。
+              系统默认开启 <code>generate_audio</code>：有口播意图时 Seedance 原生配音；字幕默认后期叠字（画面内禁止烧录）；纯画面镜仅环境音。
             </p>
 
             <h4>提示词自动组装顺序</h4>

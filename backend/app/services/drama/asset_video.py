@@ -116,8 +116,9 @@ async def generate_asset_video(
             "resolution": res,
             "duration_fallback": duration,
             "style_board_url": video_board_url or None,
-            # 自由画布资产生视频：不烧模型字幕（后期再叠）
+            # 自由画布资产生视频：不烧模型字幕、不叠人物介绍字卡（后期再叠）
             "burn_subtitles": False,
+            "character_intro": False,
         }
     )
     local_video, local_last_frame, task_result = await ark.gen_and_wait_seedance_body(

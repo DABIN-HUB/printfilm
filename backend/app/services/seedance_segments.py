@@ -447,8 +447,8 @@ def build_seedance_production_section(
     segment_script: str,
     *,
     ambient_only: bool = False,
-    burn_subtitles: bool = True,
-    character_intro: bool = True,
+    burn_subtitles: bool = False,
+    character_intro: bool = False,
     no_bgm: bool = False,
 ) -> str:
     """组装 Seedance 音频/字幕/BGM 强制约束（科普旁白 / 漫剧画面+对白混排）。

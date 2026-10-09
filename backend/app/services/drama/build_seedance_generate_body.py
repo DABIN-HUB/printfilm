@@ -526,8 +526,8 @@ def build_seedance_prompt_text(
     catalog: SeedanceReferenceCatalog | None = None,
     video_style_id: str | None = None,
     *,
-    burn_subtitles: bool = True,
-    character_intro: bool = True,
+    burn_subtitles: bool = False,
+    character_intro: bool = False,
     has_style_board: bool = False,
 ) -> str:
     # 提交前拆分对白舞台指示并纠正空镜误标，保证强制约束与正文一致
@@ -604,8 +604,8 @@ def build_seedance_content_items(
     video_style_id: str | None = None,
     continuity_first_frame_url: str | None = None,
     *,
-    burn_subtitles: bool = True,
-    character_intro: bool = True,
+    burn_subtitles: bool = False,
+    character_intro: bool = False,
     style_board_url: str | None = None,
 ) -> list[dict[str, Any]]:
     catalog = build_seedance_reference_catalog(reference, script=content)
@@ -727,12 +727,13 @@ def build_seedance_generate_body(input_params: BuildSeedanceGenerateBodyInput) -
     if not catalog.images:
         style_board_url = None
     use_first_frame_mode = bool(continuity) and not (catalog.images or catalog.audios)
+    # 缺省与产品一致：后期叠字，不烧模型字幕 / 不叠人物介绍
     burn_subtitles = input_params.get("burn_subtitles")
     if burn_subtitles is None:
-        burn_subtitles = True
+        burn_subtitles = False
     character_intro = input_params.get("character_intro")
     if character_intro is None:
-        character_intro = True
+        character_intro = False
 
     mid = input_params.get("model_id")
     raw_duration = resolve_seedance_duration_from_content(content, fallback=fallback)
