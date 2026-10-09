@@ -80,6 +80,45 @@ PROP_VISUAL_SYSTEM = """你是短剧道具美术，为 Seedream 写「道具本�
 MATERIAL_VISUAL_SYSTEM = """你是短剧气氛美术，为 Seedream 写空镜/气氛静帧描述。
 输出 100–220 字简体中文：景别、构图、光影、色调、氛围情绪、运动暗示（烟/水/光），适合 16:9 横屏。不要人物正脸。不要 JSON。"""
 
+IMAGE_VISUAL_SYSTEM = """你是概念图提示词助手。用户给了简短画面意图，请扩写成 Seedream 可用的中文画面描述。
+
+要求：
+1. 只输出一条 60–200 字简体中文，不要 JSON、不要标题、不要引号
+2. 必须把用户指定的主体作为画面绝对中心，不得替换成无关物体（例如用户写「一头牛」就画牛，禁止画成书本/风景/人物设定板）
+3. 可补全：主体外形、材质、姿态或状态、环境、光线、色调，但不得偏离用户主体
+4. 禁止白底多视图设定板；禁止用空泛套话代替主体
+"""
+
+
+def _seed_tokens_preserved(seed: str, expanded: str) -> bool:
+    """扩写结果须保留用户短意图里的实质汉字/词（至少命中一个长度≥1 的核心字）。"""
+    seed_clean = re.sub(r"\s+", "", (seed or "").strip())
+    expanded_clean = (expanded or "").strip()
+    if not seed_clean or not expanded_clean:
+        return False
+    # 去掉量词等弱信息后取实质字
+    core = re.sub(r"^[一二三四五六七八九十几百千万两几若干]+", "", seed_clean)
+    core = re.sub(r"^(一头|一只|一条|一匹|一个|一位|一台|一部|一张|一幅)", "", core)
+    if not core:
+        core = seed_clean
+    # 核心串整段出现，或逐字（长度≥2 取前 2～4 字）命中
+    if core and core in expanded_clean:
+        return True
+    for n in (4, 3, 2, 1):
+        if len(core) >= n and core[:n] in expanded_clean:
+            return True
+    return False
+
+
+def _anchor_short_image_prompt(seed: str, name: str = "") -> str:
+    """短意图保底：把用户词钉在最前，避免回落旧 visualPrompt / 静物套话。"""
+    subject = (seed or "").strip() or (name or "").strip() or "画面主体"
+    return normalize_visual_prompt_text(
+        f"画面主体必须是：{subject}。"
+        f"清晰、完整、细节丰富，以该主体为绝对视觉中心，"
+        f"背景简洁不抢戏，禁止替换成无关物体。"
+    )
+
 
 # 是否命中模板套话且整体偏短
 def is_generic_template_prompt(text: str) -> bool:
@@ -401,6 +440,31 @@ async def resolve_visual_prompt_for_asset(
                 raise RuntimeError(f"「{name}」AI 提示词生成失败") from exc
             logger.exception("%s 视觉提示词 LLM 失败 asset_id=%s", kind, asset.id)
         return rule_prompt
+
+    # 自由画布 image 等：短提示必须钉住用户主体，禁止回落旧 visualPrompt / 静物套话
+    if kind == "image" or kind not in {"character", "scene", "prop", "material", "none"}:
+        if seed:
+            try:
+                llm = await _llm_visual_prompt(
+                    IMAGE_VISUAL_SYSTEM,
+                    f"用户意图：{seed}\n资产名：{name or '（无）'}",
+                    min_len=40,
+                    **llm_bill,
+                )
+                if llm and _seed_tokens_preserved(seed, llm):
+                    return llm
+            except LlmUnavailableError:
+                raise
+            except Exception:
+                logger.exception("自由图片视觉提示词 LLM 失败 asset_id=%s", asset.id)
+                if strict_llm:
+                    raise
+            return _anchor_short_image_prompt(seed, name)
+        if stored and not is_weak_visual_prompt(stored, name, kind):
+            return stored
+        return normalize_visual_prompt_text(
+            f"{name or '画面'}，主体明确，构图完整，细节清晰。"
+        )
 
     if seed and len(seed) >= min_len:
         return seed

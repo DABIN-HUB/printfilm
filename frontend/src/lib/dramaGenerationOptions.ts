@@ -68,6 +68,27 @@ export function defaultOptionsForAssetKind(kind: string | undefined | null): Ima
   return { ...DEFAULT_IMAGE_GENERATION_OPTIONS }
 }
 
+const ASPECT_RATIO_IDS = new Set(GENERATION_ASPECT_RATIO_OPTIONS.map((o) => o.id))
+
+/** 从节点/资产 params 读取已保存的生图选项（非法字段回退默认） */
+export function readImageGenerationOptions(
+  raw: Record<string, unknown> | null | undefined,
+  kind?: string | null,
+): ImageGenerationOptions {
+  const defaults = defaultOptionsForAssetKind(kind)
+  if (!raw || typeof raw !== 'object') return { ...defaults }
+  const modelId = typeof raw.model_id === 'string' ? raw.model_id.trim() : ''
+  const aspect = String(raw.aspect_ratio || '').trim() as GenerationAspectRatioId
+  const resolution = String(raw.resolution || '').trim() as GenerationResolution
+  const styleId = typeof raw.image_style_id === 'string' ? raw.image_style_id.trim() : ''
+  return {
+    model_id: modelId || defaults.model_id,
+    aspect_ratio: ASPECT_RATIO_IDS.has(aspect) ? aspect : defaults.aspect_ratio,
+    resolution: GENERATION_RESOLUTION_OPTIONS.includes(resolution) ? resolution : defaults.resolution,
+    image_style_id: styleId || defaults.image_style_id,
+  }
+}
+
 /** 格式化比例·清晰度触发文案 */
 export function formatOutputSettingsLabel(
   aspectRatio: GenerationAspectRatioId,

@@ -62,6 +62,14 @@ MATERIAL_PROMPT_PREFIX = (
     "请严格依据以下用户描述生成素材画面："
 )
 
+# IMAGE_PROMPT_PREFIX 自由画布图片：短意图也必须钉住主体
+IMAGE_PROMPT_PREFIX = (
+    "【强制任务：按用户意图生成单张画面】"
+    "用户描述中的主体必须是画面绝对中心，禁止替换成无关物体，"
+    "禁止白底多视图设定板，禁止只出空镜氛围而丢掉主体。"
+    "请严格依据以下用户描述生成画面："
+)
+
 
 # 将内置风格提示词追加到正文后；设定板类资产强调构图优先于风格场景
 # has_style_board 为真时补一句：只借画风板气质，禁止抄主体
@@ -106,6 +114,8 @@ def build_generation_prompt(
         structure_locked = True
     elif kind in {"material", "none"}:
         prompt = f"{MATERIAL_PROMPT_PREFIX}{trimmed}"
+    elif kind == "image":
+        prompt = f"{IMAGE_PROMPT_PREFIX}{trimmed}"
     return append_style_prompt(
         prompt, style_id, structure_locked=structure_locked, has_style_board=has_style_board
     )

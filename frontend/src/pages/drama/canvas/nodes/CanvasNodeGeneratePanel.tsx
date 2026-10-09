@@ -5,7 +5,7 @@ import { SeedanceRulesModal } from '../../../../components/drama/SeedanceRulesMo
 import { useCanvasStore } from '../CanvasStore'
 import { CANVAS_GENERATABLE_KINDS, type CanvasNodeKind } from '../canvasTypes'
 import {
-  defaultOptionsForAssetKind,
+  readImageGenerationOptions,
   type ImageGenerationOptions,
 } from '../../../../lib/dramaGenerationOptions'
 import {
@@ -31,6 +31,8 @@ type CanvasNodeGeneratePanelProps = {
   hasMedia?: boolean
   /** 视频节点已保存的 Seedance 参数 */
   videoOptions?: Record<string, unknown>
+  /** 生图节点已保存的模型/比例/清晰度 */
+  imageOptions?: Record<string, unknown>
 }
 
 /** 按节点类型返回面板文案 */
@@ -83,6 +85,7 @@ export function CanvasNodeGeneratePanel({
   label = '',
   hasMedia = false,
   videoOptions: savedVideoOptions,
+  imageOptions: savedImageOptions,
 }: CanvasNodeGeneratePanelProps) {
   const {
     generateNodeImage,
@@ -91,6 +94,7 @@ export function CanvasNodeGeneratePanel({
     projectImageStyleId,
     updateNodePrompt,
     updateNodeVideoOptions,
+    updateNodeImageOptions,
     mentionableNodes,
     edges,
   } = useCanvasStore()
@@ -105,11 +109,14 @@ export function CanvasNodeGeneratePanel({
   const [optimizing, setOptimizing] = useState(false)
   const { skills, selectedIds, toggleSkill, selectAll, selectNone, uploadSkill, uploading, uploadError } =
     useAgentSkillSelection()
-  // imageOptions 生图风格/模型/画幅
-  const [imageOptions, setImageOptions] = useState<ImageGenerationOptions>(() => ({
-    ...defaultOptionsForAssetKind(kind),
-    image_style_id: projectImageStyleId || undefined,
-  }))
+  // imageOptions 生图风格/模型/画幅（优先恢复节点上已保存选择）
+  const [imageOptions, setImageOptions] = useState<ImageGenerationOptions>(() => {
+    const saved = readImageGenerationOptions(savedImageOptions, kind)
+    return {
+      ...saved,
+      image_style_id: saved.image_style_id || projectImageStyleId || undefined,
+    }
+  })
   // videoOpts Seedance 时长/比例/清晰度
   const [videoOpts, setVideoOpts] = useState<VideoGenerationOptions>(() => {
     const saved = readVideoGenerationOptions(savedVideoOptions)
@@ -149,15 +156,15 @@ export function CanvasNodeGeneratePanel({
     setPrompt((prev) => next || prev)
   }, [defaultPrompt, nodeId, kind, label])
 
-  /* 节点类型或项目风格变化时同步默认选项 */
+  /* 仅切换节点时从节点恢复生图选项；编辑过程不覆盖本地选择 */
   useEffect(() => {
-    setImageOptions((prev) => ({
-      ...defaultOptionsForAssetKind(kind),
-      image_style_id: prev.image_style_id || projectImageStyleId || undefined,
-      model_id: prev.model_id,
-      resolution: prev.resolution,
-    }))
-  }, [kind, nodeId, projectImageStyleId])
+    const saved = readImageGenerationOptions(savedImageOptions, kind)
+    setImageOptions({
+      ...saved,
+      image_style_id: saved.image_style_id || projectImageStyleId || undefined,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在换节点时恢复
+  }, [nodeId, kind])
 
   useEffect(() => {
     const saved = readVideoGenerationOptions(savedVideoOptions)
@@ -167,7 +174,7 @@ export function CanvasNodeGeneratePanel({
       image_style_id: saved.image_style_id || projectImageStyleId || undefined,
     })
     // 仅切换节点时恢复已保存参数，避免编辑选项时被回写覆盖
-  }, [nodeId, projectImageStyleId])
+  }, [nodeId])
 
   const isBusy = busy || generating || optimizing
   const canSubmit = prompt.trim().length > 0 && !isBusy
@@ -186,10 +193,9 @@ export function CanvasNodeGeneratePanel({
       updateNodePrompt(nodeId, prompt)
       if (isVideo) {
         updateNodeVideoOptions(nodeId, videoOpts)
-      }
-      if (isVideo) {
         await generateNodeVideo(nodeId, prompt, videoOpts)
       } else {
+        updateNodeImageOptions(nodeId, imageOptions)
         await generateNodeImage(nodeId, prompt, imageOptions)
       }
     } catch (err) {
@@ -277,7 +283,14 @@ export function CanvasNodeGeneratePanel({
           }}
         />
       ) : (
-        <DramaImageGenOptionsBar value={imageOptions} onChange={setImageOptions} disabled={isBusy} />
+        <DramaImageGenOptionsBar
+          value={imageOptions}
+          disabled={isBusy}
+          onChange={(next) => {
+            setImageOptions(next)
+            updateNodeImageOptions(nodeId, next)
+          }}
+        />
       )}
       <DramaSkillOptionsBar
         skills={skills}

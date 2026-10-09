@@ -36,6 +36,10 @@ export function buildNodeDataFromAsset(asset: DramaAsset): CanvasAssetNodeData {
   const promptHint = readEditableVisualPrompt(asset)
   const videoOptions =
     kind === 'video' ? readVideoGenerationOptions(params.videoOptions || params) : undefined
+  const imageOptions =
+    kind === 'video'
+      ? undefined
+      : ((params.imageOptions as Record<string, unknown> | undefined) || undefined)
   const label =
     (typeof asset.name === 'string' && asset.name.trim()) || CANVAS_NODE_DEFAULT_LABEL[kind]
   const voice = kind === 'character' ? readAssetVoiceBinding(asset) : null
@@ -48,6 +52,7 @@ export function buildNodeDataFromAsset(asset: DramaAsset): CanvasAssetNodeData {
     textContent: kind === 'text' ? String(params.textContent || '') : undefined,
     promptHint,
     videoOptions,
+    imageOptions,
     characterName: kind === 'character' ? label : undefined,
     voiceLabel: voice?.label || null,
     voiceUrl: voice?.url || null,
@@ -113,6 +118,7 @@ export function mergeAssetsWithCanvasLayout(
           label: (savedNode.data.label as string) || data.label,
           promptHint: data.promptHint || savedNode.data.promptHint || '',
           videoOptions: data.videoOptions || savedNode.data.videoOptions,
+          imageOptions: data.imageOptions || savedNode.data.imageOptions,
           textContent:
             data.kind === 'text'
               ? savedNode.data.textContent ?? data.textContent

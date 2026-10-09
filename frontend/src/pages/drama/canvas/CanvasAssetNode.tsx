@@ -317,6 +317,7 @@ function CanvasAssetNodeComponent({ id, data, selected }: NodeProps<Node<CanvasA
             label={data.label || ''}
             hasMedia={Boolean(mediaSrc)}
             videoOptions={data.videoOptions}
+            imageOptions={data.imageOptions}
           />
         </NodeToolbar>
       ) : null}

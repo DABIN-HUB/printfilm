@@ -81,6 +81,8 @@ type CanvasStoreValue = {
   updateNodePrompt: (nodeId: string, prompt: string) => void
   /** 写回视频节点生成参数 */
   updateNodeVideoOptions: (nodeId: string, options: Record<string, unknown>) => void
+  /** 写回生图节点生成参数 */
+  updateNodeImageOptions: (nodeId: string, options: Record<string, unknown>) => void
   /** 重命名节点（同步资产 name） */
   renameNode: (nodeId: string, name: string) => Promise<void>
   generateNodeImage: (
@@ -584,7 +586,15 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
       setNodes((current) =>
         current.map((n) =>
           n.id === nodeId
-            ? { ...n, data: { ...n.data, generating: true, promptHint: trimmed } }
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  generating: true,
+                  promptHint: trimmed,
+                  imageOptions: { ...(n.data.imageOptions || {}), ...(options || {}) },
+                },
+              }
             : n,
         ),
       )
@@ -794,6 +804,19 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
     [markDirty],
   )
 
+  /** 写回生图模型/比例等到节点，避免发送后 UI 跳回默认 */
+  const updateNodeImageOptions = useCallback(
+    (nodeId: string, options: Record<string, unknown>) => {
+      setNodes((current) =>
+        current.map((n) =>
+          n.id === nodeId ? { ...n, data: { ...n.data, imageOptions: options } } : n,
+        ),
+      )
+      markDirty()
+    },
+    [markDirty],
+  )
+
   /** 重命名节点并同步资产 name */
   const renameNode = useCallback(
     async (nodeId: string, name: string) => {
@@ -944,6 +967,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
       syncNodeFromAsset,
       updateNodePrompt,
       updateNodeVideoOptions,
+      updateNodeImageOptions,
       renameNode,
       generateNodeImage,
       generateNodeVideo,
@@ -977,6 +1001,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
       syncNodeFromAsset,
       updateNodePrompt,
       updateNodeVideoOptions,
+      updateNodeImageOptions,
       renameNode,
       generateNodeImage,
       generateNodeVideo,

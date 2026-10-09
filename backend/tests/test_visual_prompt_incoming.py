@@ -54,3 +54,45 @@ async def test_no_incoming_keeps_strong_stored_prompt():
     )
     resolved = await resolve_visual_prompt_for_asset(asset, project, None)
     assert resolved == stored
+
+
+@pytest.mark.asyncio
+async def test_short_image_prompt_not_replaced_by_stored_still_life(monkeypatch):
+    """自由画布短意图不得被旧静物 visualPrompt 或套话顶替。"""
+    from app.services.drama import visual_prompt as vp
+
+    async def _fake_llm(*_args, **_kwargs):
+        return "一头黄牛站在泥地田埂上，牛角弯曲，皮毛湿润反光，背景是远处麦田。"
+
+    monkeypatch.setattr(vp, "_llm_visual_prompt", _fake_llm)
+    project = DramaProject(id=1, user_id=1, title="t", params={})
+    stored = (
+        "一本翻开的棕色皮革笔记本放在木桌上，阳光从左侧窗户斜打，旁边有一盆绿植，"
+        "纸页泛黄，构图偏静物摄影，细节清晰。"
+    )
+    asset = DramaAsset(
+        id=99,
+        project_id=1,
+        type="image",
+        name="新图片 4",
+        params={"visualPrompt": stored},
+    )
+    resolved = await resolve_visual_prompt_for_asset(asset, project, "一头牛")
+    assert "牛" in resolved
+    assert "笔记本" not in resolved
+
+
+@pytest.mark.asyncio
+async def test_short_image_prompt_anchors_when_llm_drifts(monkeypatch):
+    """LLM 跑偏时仍回落到钉住用户主体的保底句。"""
+    from app.services.drama import visual_prompt as vp
+
+    async def _fake_llm(*_args, **_kwargs):
+        return "一本翻开的棕色皮革笔记本放在木桌上，阳光斜打，静物摄影。"
+
+    monkeypatch.setattr(vp, "_llm_visual_prompt", _fake_llm)
+    project = DramaProject(id=1, user_id=1, title="t", params={})
+    asset = DramaAsset(id=99, project_id=1, type="image", name="新图片 4", params={})
+    resolved = await resolve_visual_prompt_for_asset(asset, project, "一头牛")
+    assert "一头牛" in resolved or "牛" in resolved
+    assert "画面主体必须是" in resolved

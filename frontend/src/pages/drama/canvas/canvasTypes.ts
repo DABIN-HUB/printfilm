@@ -26,6 +26,8 @@ export type CanvasAssetNodeData = {
   generating?: boolean
   /** 视频节点 Seedance 生成参数 */
   videoOptions?: Record<string, unknown>
+  /** 角色/场景/图片节点生图参数（模型/比例/清晰度） */
+  imageOptions?: Record<string, unknown>
   [key: string]: unknown
 }
 

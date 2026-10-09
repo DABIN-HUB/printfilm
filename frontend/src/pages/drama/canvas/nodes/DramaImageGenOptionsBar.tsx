@@ -49,14 +49,13 @@ export function DramaImageGenOptionsBar({
   const imageModels = catalogImageModels(catalog)
 
   useEffect(() => {
-    // 目录到达后，把旧 Kie/方舟 id 换成后台默认图片模型，并钳制参数
-    if (!catalog || disabled) return
+    // 仅在模型为空/不在目录时补默认；用户已选合法模型时绝不覆盖。
+    // 注意：不要依赖 disabled——发送后 busy 翻转会误触发，把选项打回 Seedream/3:4。
+    if (!catalog) return
     const ids = imageModels.map((m) => m.id)
     if (!ids.length) return
-    let nextModel = value.model_id
-    if (!nextModel || !ids.includes(nextModel)) {
-      nextModel = catalog.defaults.image_model || ids[0]
-    }
+    if (value.model_id && ids.includes(value.model_id)) return
+    const nextModel = catalog.defaults.image_model || ids[0]
     const nextRatio = clampImageAspectRatioForModel(
       nextModel,
       value.aspect_ratio,
@@ -69,18 +68,12 @@ export function DramaImageGenOptionsBar({
       catalog,
       imageModels,
     )
-    if (
-      nextModel !== value.model_id ||
-      nextRatio !== value.aspect_ratio ||
-      nextRes !== value.resolution
-    ) {
-      onChange({ ...value, model_id: nextModel, aspect_ratio: nextRatio, resolution: nextRes })
-    }
-  }, [catalog, disabled])
+    onChange({ ...value, model_id: nextModel, aspect_ratio: nextRatio, resolution: nextRes })
+  }, [catalog, value.model_id])
 
   useEffect(() => {
-    // 换模型后钳制比例/清晰度
-    if (disabled || !value.model_id) return
+    // 换模型后钳制比例/清晰度（不因 disabled 翻转重跑）
+    if (!value.model_id || !catalog) return
     const nextRatio = clampImageAspectRatioForModel(
       value.model_id,
       value.aspect_ratio,
@@ -96,7 +89,7 @@ export function DramaImageGenOptionsBar({
     if (nextRatio !== value.aspect_ratio || nextRes !== value.resolution) {
       onChange({ ...value, aspect_ratio: nextRatio, resolution: nextRes })
     }
-  }, [value.model_id, catalog, disabled])
+  }, [value.model_id, catalog])
 
   const aspectOptions = aspectRatiosForImageModel(value.model_id, catalog, imageModels)
   const resolutionOptions = resolutionsForImageModel(value.model_id, catalog, imageModels)
