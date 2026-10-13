@@ -878,15 +878,26 @@ class ArkGateway:
         # TokenFree 按逻辑路由解析出的上游模型原样发送，不硬改模型名
         chosen = (upstream_model or "").strip()
         if on_tokenfree and "gpt-image" in chosen.lower():
-            # Kie / gpt-image 实际按 1K·2K 档；3K/4K 钳到 2K，与计费一致
-            if str(resolved_size or "").strip().upper() in {"3K", "4K"}:
+            # Kie / gpt-image 实际按 1K·2K 档；画幅靠 aspect_ratio 自然语言约束。
+            # 无 aspect_ratio 时保留 WxH，避免把唯一画幅信号压成「清晰度2K」。
+            raw_size = str(resolved_size or "").strip()
+            upper = raw_size.upper()
+            if upper in {"3K", "4K"}:
                 resolved_size = "2K"
+            elif "x" in raw_size.lower() and str(aspect_ratio or "").strip():
+                try:
+                    w_s, _, h_s = raw_size.lower().partition("x")
+                    area = int(w_s) * int(h_s)
+                    resolved_size = "2K" if area >= 1500 * 1500 else "1K"
+                except ValueError:
+                    resolved_size = "2K"
         if on_tokenfree:
             path = "/responses"
             body = build_tokenfree_image_body(
                 model=chosen,
                 prompt=full_prompt,
                 size=str(resolved_size or ""),
+                aspect_ratio=str(aspect_ratio or ""),
                 ref_urls=subject_refs,
                 style_ref_urls=style_refs,
             )

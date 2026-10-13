@@ -33,9 +33,38 @@ def test_build_tokenfree_image_body_matches_live_success():
     body = build_tokenfree_image_body(model="gpt-image-2", prompt="橘猫", size="2K")
     assert body["model"] == "gpt-image-2"
     assert "橘猫" in body["input"]
+    assert "输出清晰度2K" in body["input"]
     assert "size:" not in body["input"]
     assert "prompt" not in body
     assert "watermark" not in body
+
+
+def test_build_tokenfree_image_body_includes_aspect_ratio():
+    """UI 所选画幅必须进自然语言 input，不能只写清晰度。"""
+    body = build_tokenfree_image_body(
+        model="gpt-image-2",
+        prompt="国风角色设定板",
+        size="2K",
+        aspect_ratio="16:9",
+    )
+    text = body["input"]
+    assert "输出画幅必须为16:9" in text
+    assert "横构图" in text
+    assert "输出清晰度2K" in text
+    assert "输出清晰度2816x1584" not in text
+
+
+def test_build_tokenfree_image_body_pixel_size_not_called_clarity():
+    body = build_tokenfree_image_body(
+        model="gpt-image-2",
+        prompt="场景",
+        size="2816x1584",
+        aspect_ratio="16:9",
+    )
+    text = body["input"]
+    assert "目标像素约2816x1584" in text
+    assert "输出画幅必须为16:9" in text
+    assert "输出清晰度2816x1584" not in text
 
 
 def test_build_tokenfree_image_body_separates_style_and_subject_refs():
