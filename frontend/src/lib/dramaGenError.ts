@@ -265,6 +265,15 @@ export function formatDramaGenError(raw: string | null | undefined): DramaGenErr
     }
   }
 
+  // 浏览器层断连：不是脚本/参考图问题，常因后端热重载或瞬时网络
+  if (/failed to fetch|networkerror|load failed|connection reset|连接被重置/i.test(text)) {
+    return {
+      title: '网络中断',
+      message: '请求后端失败（Failed to fetch）。任务可能仍在排队或已完成。',
+      suggestion: '请刷新画布查看节点是否已有成片；没有的话再点一次生成。开发时后端 --reload 热重载也容易触发此提示。',
+    }
+  }
+
   // 已是较短中文：原样展示，补通用建议
   if (!/[{\\[\]"]/.test(text) && text.length <= 120 && /[\u4e00-\u9fff]/.test(text)) {
     return {

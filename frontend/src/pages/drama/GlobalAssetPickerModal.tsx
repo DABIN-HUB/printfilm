@@ -41,9 +41,10 @@ function matchAssetTab(asset: DramaAsset, tab: GlobalAssetTabKey): boolean {
   return t === tab
 }
 
-// asset visible in picker (voice always; image needs cover/url)
+// asset visible in picker (voice/audio with url; image needs cover/url)
 function hasMedia(asset: DramaAsset): boolean {
-  if ((asset.type || '').toLowerCase() === 'voice') return true
+  const t = (asset.type || '').toLowerCase()
+  if (t === 'voice' || t === 'audio') return Boolean(asset.url || asset.cover)
   return Boolean(asset.url || asset.cover)
 }
 
@@ -251,5 +252,6 @@ export async function importGlobalAssetToProject(
 export function canvasKindToLibraryTypes(kind: string): string[] {
   if (kind === 'character') return ['character']
   if (kind === 'scene') return ['scene']
+  if (kind === 'audio') return DRAMA_VOICE_BINDING_ENABLED ? ['audio', 'voice'] : ['audio']
   return ['prop', 'image']
 }

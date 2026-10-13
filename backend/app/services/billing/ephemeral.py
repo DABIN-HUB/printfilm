@@ -358,6 +358,7 @@ async def settle_deferred_video_poll(
                 domain=task.domain or "api",
                 task_result=task_result,
                 fallback_duration_sec=payload.get("duration"),
+                resolution=str(payload.get("resolution") or ""),
                 provider_task_id=provider_task_id,
                 project_id=task.project_id,
                 drama_project_id=task.drama_project_id,

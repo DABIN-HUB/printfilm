@@ -183,11 +183,37 @@ def charge_fen_for_usage(
     生图无 quota 时：按张官方价，避免 8 元/百万 token 低估约十倍。
     """
     s = settings or get_settings()
+    # 视频按清晰度 × 时长。只有响应里带了 New API quota 时才改用账单额度。
+    if not _raw_has_newapi_quota(raw_usage):
+        video_fen, video_basis = _video_resolution_duration_fen(
+            billing_key,
+            raw_usage=raw_usage,
+            settings=s,
+            model=model,
+        )
+        if video_fen is not None and video_fen > 0:
+            if video_basis and isinstance(raw_usage, dict):
+                raw_usage["billing_basis"] = video_basis
+            charge = user_charge_fen(video_fen, s)
+            return video_fen, charge, False
     upstream_cost = parse_upstream_cost_fen(raw_usage, settings=s)
     if upstream_cost is not None and upstream_cost > 0:
         cost = upstream_cost
         charge = user_charge_fen(cost, s)
         return cost, charge, True
+    verified, basis = _verified_rule_fen(
+        tokens,
+        billing_key,
+        raw_usage=raw_usage,
+        settings=s,
+        model=model,
+        size=size,
+    )
+    if verified is not None and verified > 0:
+        if basis and isinstance(raw_usage, dict):
+            raw_usage["billing_basis"] = basis
+        charge = user_charge_fen(verified, s)
+        return verified, charge, False
     if (billing_key or "").strip() == "seedream":
         catalog = _catalog_image_fen_if_per_call(
             s, model, size=size or _image_size_from_raw(raw_usage)
@@ -197,6 +223,141 @@ def charge_fen_for_usage(
             return catalog, charge, False
     cost, charge = charge_fen_for_tokens(tokens, billing_key, settings=s)
     return cost, charge, False
+
+
+def _usage_block(raw_usage: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(raw_usage, dict):
+        return {}
+    usage = raw_usage.get("usage") if isinstance(raw_usage.get("usage"), dict) else {}
+    merged = dict(usage)
+    for key in (
+        "seconds",
+        "duration",
+        "duration_sec",
+        "resolution",
+        "size",
+        "image_size",
+        "input_video_seconds",
+        "audio_characters",
+        "image_count",
+        "results",
+        "tier",
+    ):
+        if raw_usage.get(key) is not None and merged.get(key) is None:
+            merged[key] = raw_usage.get(key)
+    return merged
+
+
+def _raw_has_newapi_quota(raw_usage: dict[str, Any] | None) -> bool:
+    """单次响应里是否带了 New API 消耗额度。"""
+    if not isinstance(raw_usage, dict):
+        return False
+    usage = raw_usage.get("usage") if isinstance(raw_usage.get("usage"), dict) else {}
+    return _extract_newapi_quota(raw_usage, usage if isinstance(usage, dict) else {}) is not None
+
+
+def _is_video_billing(billing_key: str, model: str) -> bool:
+    """是否按视频秒价结算。"""
+    key = (billing_key or "").strip().lower()
+    mid = (model or "").strip().lower()
+    if key.startswith("seedance"):
+        return True
+    return any(token in mid for token in ("seedance", "minimax", "wan", "veo", "kling", "hailuo", "video"))
+
+
+def _fact_seconds(facts: dict[str, Any]) -> float:
+    """从用量里取片长（秒）。"""
+    for key in ("seconds", "duration", "duration_sec"):
+        try:
+            value = float(facts.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0.0
+
+
+def _video_has_duration_expr(model: str) -> bool:
+    """价目表达式是否按秒计价。"""
+    from app.services.tokenfree_pricing import canonicalize_channel_model_id, lookup_rate
+
+    rate = lookup_rate(model)
+    if rate is None:
+        mapped = canonicalize_channel_model_id(model)
+        rate = lookup_rate(mapped) if mapped else None
+    return bool(rate and rate.billing_expr and "seconds" in rate.billing_expr)
+
+
+def _video_resolution_duration_fen(
+    billing_key: str,
+    *,
+    raw_usage: dict[str, Any] | None,
+    settings: Settings,
+    model: str,
+) -> tuple[int | None, str]:
+    """视频实扣：该清晰度的秒价 × 时长。没有片长时返回 (None, '')。"""
+    if not _is_video_billing(billing_key, model):
+        return None, ""
+    facts = _usage_block(raw_usage)
+    seconds = _fact_seconds(facts)
+    if seconds <= 0:
+        return None, ""
+    from app.services.tokenfree_pricing import charge_fen_official_video, normalize_video_resolution
+
+    resolution = normalize_video_resolution(str(facts.get("resolution") or ""), settings)
+    fen = charge_fen_official_video(seconds, settings, model=model, resolution=resolution)
+    if fen <= 0:
+        return None, ""
+    basis = "official_rule" if _video_has_duration_expr(model) else ""
+    return fen, basis
+
+
+def _verified_rule_fen(
+    tokens: int,
+    billing_key: str,
+    *,
+    raw_usage: dict[str, Any] | None,
+    settings: Settings,
+    model: str,
+    size: str,
+) -> tuple[int | None, str]:
+    """用价目规则报价。返回 (分, basis)；对不上价目时分是本地回退且 basis 为空。"""
+    from app.services.billingexpr import quote_verified_charge_fen
+
+    facts = _usage_block(raw_usage)
+    parsed = parse_usage_dict(raw_usage)
+    prompt = int(parsed.get("prompt_tokens") or 0)
+    completion = int(parsed.get("completion_tokens") or 0)
+    if size and not facts.get("resolution"):
+        facts["resolution"] = size
+    if facts.get("resolution"):
+        facts["resolution"] = str(facts["resolution"]).strip().lower()
+    key = (billing_key or "").strip()
+    if (key.startswith("seedance") or "video" in (model or "").lower()) and not facts.get("resolution"):
+        from app.services.tokenfree_pricing import normalize_video_resolution
+
+        facts["resolution"] = normalize_video_resolution("", settings)
+    quoted = quote_verified_charge_fen(
+        model=model,
+        prompt=prompt,
+        completion=completion,
+        total=int(tokens or 0),
+        usage=facts,
+        settings=settings,
+    )
+    if quoted is not None and quoted > 0:
+        return quoted, "official_rule"
+    if key.startswith("seedance") or "video" in (model or "").lower():
+        from app.services.tokenfree_pricing import charge_fen_official_video, normalize_video_resolution
+
+        try:
+            secs = float(facts.get("seconds") or 0)
+        except (TypeError, ValueError):
+            secs = 0
+        if secs > 0:
+            res = normalize_video_resolution(str(facts.get("resolution") or ""), settings)
+            return charge_fen_official_video(secs, settings, model=model, resolution=res), ""
+    return None, ""
 
 
 def _catalog_image_fen_if_per_call(settings: Settings, model: str, *, size: str = "") -> int | None:

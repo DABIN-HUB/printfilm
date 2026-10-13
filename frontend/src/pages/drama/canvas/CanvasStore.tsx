@@ -37,6 +37,7 @@ import {
   type CanvasHistoryState,
 } from './canvasHistory'
 import { mergeAssetsWithCanvasLayout, buildNodeDataFromAsset } from './assetsToCanvasNodes'
+import { buildBoundParams } from '../CharacterVoiceBindModal'
 import {
   CANVAS_NODE_DEFAULT_LABEL,
   nextCanvasNodeLabel,
@@ -44,8 +45,23 @@ import {
   type CanvasAssetNodeData,
   type CanvasNodeKind,
 } from './canvasTypes'
-import { useCanvasAutoSave } from './useCanvasAutoSave'
+import { useCanvasAutoSave, type CanvasSaveStatus } from './useCanvasAutoSave'
 import { CanvasStoreContext, useCanvasStore as useCanvasStoreBase } from './canvasStoreContext'
+
+/** 从连线两端识别「音频 → 角色」绑定对（方向可互换） */
+function pickAudioCharacterPair(
+  source: Node<CanvasAssetNodeData> | undefined,
+  target: Node<CanvasAssetNodeData> | undefined,
+): { audio: Node<CanvasAssetNodeData>; character: Node<CanvasAssetNodeData> } | null {
+  if (!source || !target) return null
+  if (source.data.kind === 'audio' && target.data.kind === 'character') {
+    return { audio: source, character: target }
+  }
+  if (source.data.kind === 'character' && target.data.kind === 'audio') {
+    return { audio: target, character: source }
+  }
+  return null
+}
 
 type CanvasStoreValue = {
   projectId: number
@@ -53,7 +69,9 @@ type CanvasStoreValue = {
   edges: Edge[]
   loading: boolean
   errorMessage: string
+  /** @deprecated 兼容旧顶栏；请用 saveStatus */
   saveStatusVisible: boolean
+  saveStatus: CanvasSaveStatus
   snapToGrid: boolean
   showMinimap: boolean
   canUndo: boolean
@@ -96,7 +114,7 @@ type CanvasStoreValue = {
     options?: Partial<VideoGenerationOptions>,
   ) => Promise<void>
   updateNodeTextContent: (nodeId: string, textContent: string) => void
-  /** 可供 @ 引用的画布节点（角色/场景/图片等） */
+  /** 可供 @ 引用的画布节点（角色/场景/图片/音频等） */
   mentionableNodes: Array<{
     nodeId: string
     assetId: number
@@ -108,6 +126,8 @@ type CanvasStoreValue = {
   projectImageStyleId: string
   /** 是否自由画布工作流（非大纲分集） */
   freeCanvasMode: boolean
+  /** 立即保存画布（Ctrl+S） */
+  flushSave: () => Promise<void>
 }
 
 type CanvasStoreProviderProps = {
@@ -123,7 +143,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [dirty, setDirty] = useState(false)
-  const [saveStatusVisible, setSaveStatusVisible] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<CanvasSaveStatus>('idle')
   const [snapToGrid, setSnapToGrid] = useState(false)
   const [showMinimap, setShowMinimap] = useState(false)
   const [focusNodeId, setFocusNodeId] = useState<string | null>(null)
@@ -151,7 +171,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
     readyRef.current = false
     setLoading(true)
     setDirty(false)
-    setSaveStatusVisible(false)
+    setSaveStatus('idle')
     setErrorMessage('')
 
     Promise.all([
@@ -223,7 +243,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
   const markDirty = useCallback(() => {
     if (!readyRef.current) return
     setDirty(true)
-    setSaveStatusVisible(false)
+    setSaveStatus('dirty')
   }, [])
 
   const pushSnapshot = useCallback(() => {
@@ -318,6 +338,10 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
     [markDirty],
   )
 
+  const bindVoiceFromEdgeRef = useRef<
+    (audioNodeId: string, characterNodeId: string) => Promise<void>
+  >(async () => undefined)
+
   const onConnect: OnConnect = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.target || connection.source === connection.target) {
@@ -335,6 +359,15 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
         return next
       })
       markDirty()
+
+      const source = nodesRef.current.find((n) => n.id === connection.source)
+      const target = nodesRef.current.find((n) => n.id === connection.target)
+      const pair = pickAudioCharacterPair(source, target)
+      if (pair) {
+        void bindVoiceFromEdgeRef.current(pair.audio.id, pair.character.id).catch((err) => {
+          setErrorMessage(err instanceof Error ? err.message : '音色绑定失败')
+        })
+      }
     },
     [markDirty],
   )
@@ -460,36 +493,53 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
     [markDirty, projectId],
   )
 
-  /** 本地上传图片到节点 */
+  /** 本地上传图片/音频到节点；音频上传后若已连角色则自动重绑音色 */
   const uploadNodeMedia = useCallback(
     async (nodeId: string, file: File) => {
       pushSnapshot()
       const assetId = await ensureNodeAsset(nodeId)
       const asset = await dramaApi.uploadAssetMedia(assetId, file)
       const mediaUrl = asset.url || asset.cover || ''
-      setNodes((current) =>
-        current.map((n) =>
+      const node = nodesRef.current.find((n) => n.id === nodeId)
+      setNodes((current) => {
+        const next = current.map((n) =>
           n.id === nodeId
             ? { ...n, data: { ...n.data, assetId, mediaUrl, generating: false } }
             : n,
-        ),
-      )
+        )
+        nodesRef.current = next
+        return next
+      })
       markDirty()
+
+      if (node?.data.kind === 'audio' && mediaUrl) {
+        const linkedCharacters = edgesRef.current
+          .filter((e) => e.source === nodeId || e.target === nodeId)
+          .map((e) => (e.source === nodeId ? e.target : e.source))
+          .map((id) => nodesRef.current.find((n) => n.id === id))
+          .filter((n): n is Node<CanvasAssetNodeData> => Boolean(n && n.data.kind === 'character'))
+        for (const character of linkedCharacters) {
+          void bindVoiceFromEdgeRef.current(nodeId, character.id).catch((err) => {
+            setErrorMessage(err instanceof Error ? err.message : '音色绑定失败')
+          })
+        }
+      }
     },
     [ensureNodeAsset, markDirty, pushSnapshot],
   )
 
-  /** 从全局资产库选用图片并写回节点，保留可编辑提示词以便再次生成 */
+  /** 从全局资产库选用媒体并写回节点，保留可编辑提示词以便再次生成 */
   const applyLibraryMediaToNode = useCallback(
     async (nodeId: string, source: DramaAsset) => {
-      if (!source.url && !source.cover) {
-        throw new Error('所选资产没有可用图片')
-      }
       pushSnapshot()
       const node = nodesRef.current.find((n) => n.id === nodeId)
       if (!node) throw new Error('节点不存在')
+      const isAudioNode = node.data.kind === 'audio'
+      if (!source.url && !source.cover) {
+        throw new Error(isAudioNode ? '所选资产没有可用音频' : '所选资产没有可用图片')
+      }
       const assetId = await ensureNodeAsset(nodeId)
-      const promptHint = readEditableVisualPrompt(source)
+      const promptHint = isAudioNode ? '' : readEditableVisualPrompt(source)
       const nextName = (source.name || '').trim() || node.data.label
       const currentAsset = await dramaApi.listAssets(projectId).then(
         (list) => list.find((a) => a.id === assetId) || null,
@@ -506,16 +556,22 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
       const visualImage = String(
         sourceParams.visualImage || sourceParams.visualPrompt || promptHint || '',
       ).trim()
+      const mediaUrlIn = (source.url || source.cover || '').trim()
       const updated = await dramaApi.updateAsset(assetId, {
         name: nextName,
-        url: source.url || source.cover,
-        cover: source.cover || source.url,
+        url: mediaUrlIn,
+        cover: isAudioNode ? source.cover || null : source.cover || source.url,
+        asset_type: isAudioNode ? 'audio' : undefined,
         params: {
           ...prevParams,
           importedFromAssetId: source.id,
           importedFromProjectId: source.project_id,
-          visualPrompt: promptHint || visualImage || prevParams.visualPrompt,
-          visualImage: visualImage || promptHint || prevParams.visualImage,
+          ...(isAudioNode
+            ? {}
+            : {
+                visualPrompt: promptHint || visualImage || prevParams.visualPrompt,
+                visualImage: visualImage || promptHint || prevParams.visualImage,
+              }),
           canvas: {
             ...(typeof prevParams.canvas === 'object' && prevParams.canvas
               ? (prevParams.canvas as Record<string, unknown>)
@@ -525,9 +581,9 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
           canvas_node_id: nodeId,
         },
       })
-      const mediaUrl = updated.url || updated.cover || source.url || source.cover || ''
-      setNodes((current) =>
-        current.map((n) =>
+      const mediaUrl = updated.url || updated.cover || mediaUrlIn
+      setNodes((current) => {
+        const next = current.map((n) =>
           n.id === nodeId
             ? {
                 ...n,
@@ -538,18 +594,33 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
                   generating: false,
                   label: nextName,
                   characterName: n.data.kind === 'character' ? nextName : n.data.characterName,
-                  promptHint,
+                  promptHint: isAudioNode ? n.data.promptHint : promptHint,
                 },
               }
             : n,
-        ),
-      )
+        )
+        nodesRef.current = next
+        return next
+      })
       markDirty()
+
+      if (isAudioNode && mediaUrl) {
+        const linkedCharacters = edgesRef.current
+          .filter((e) => e.source === nodeId || e.target === nodeId)
+          .map((e) => (e.source === nodeId ? e.target : e.source))
+          .map((id) => nodesRef.current.find((n) => n.id === id))
+          .filter((n): n is Node<CanvasAssetNodeData> => Boolean(n && n.data.kind === 'character'))
+        for (const character of linkedCharacters) {
+          void bindVoiceFromEdgeRef.current(nodeId, character.id).catch((err) => {
+            setErrorMessage(err instanceof Error ? err.message : '音色绑定失败')
+          })
+        }
+      }
     },
-    [ensureNodeAsset, markDirty, pushSnapshot],
+    [ensureNodeAsset, markDirty, pushSnapshot, projectId],
   )
 
-  /** 用最新资产字段同步节点展示（音色、封面、提示词等） */
+  /** 用最新资产字段同步节点展示（音色、封面等；不覆盖本地已有提示词） */
   const syncNodeFromAsset = useCallback(
     (nodeId: string, asset: DramaAsset) => {
       const next = buildNodeDataFromAsset(asset)
@@ -561,6 +632,10 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
                 data: {
                   ...n.data,
                   ...next,
+                  // 资产侧可能是空/弱提示词，保留节点上用户已写内容
+                  promptHint: next.promptHint || n.data.promptHint || '',
+                  videoOptions: next.videoOptions || n.data.videoOptions,
+                  imageOptions: next.imageOptions || n.data.imageOptions,
                   // 保留本地 generating 状态，避免绑定时闪断
                   generating: n.data.generating,
                 },
@@ -572,6 +647,44 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
     },
     [markDirty],
   )
+
+  /** 音频节点连到角色：把音频写入角色 voiceAudio（连线绑定） */
+  const bindCharacterVoiceFromAudioEdge = useCallback(
+    async (audioNodeId: string, characterNodeId: string) => {
+      const audioNode = nodesRef.current.find((n) => n.id === audioNodeId)
+      const characterNode = nodesRef.current.find((n) => n.id === characterNodeId)
+      if (!audioNode || !characterNode) return
+      const audioUrl = String(audioNode.data.mediaUrl || '').trim()
+      if (!audioUrl) {
+        setErrorMessage('请先给音频节点上传或选用音频，再连到角色')
+        return
+      }
+
+      const characterAssetId = await ensureNodeAsset(characterNodeId)
+      const audioAssetId = await ensureNodeAsset(audioNodeId)
+      const list = await dramaApi.listAssets(projectId)
+      let character = list.find((a) => a.id === characterAssetId)
+      let audio = list.find((a) => a.id === audioAssetId)
+      if (!character) throw new Error('角色资产不存在')
+      if (!audio) throw new Error('音频资产不存在')
+
+      if (!(audio.url || '').trim()) {
+        audio = await dramaApi.updateAsset(audioAssetId, {
+          url: audioUrl,
+          type: audio.type === 'voice' ? 'voice' : 'audio',
+          asset_type: 'audio',
+          name: audio.name || String(audioNode.data.label || '音色'),
+        })
+      }
+
+      const updated = await dramaApi.updateAsset(characterAssetId, {
+        params: buildBoundParams(character, audio),
+      })
+      syncNodeFromAsset(characterNodeId, updated)
+    },
+    [ensureNodeAsset, projectId, syncNodeFromAsset],
+  )
+  bindVoiceFromEdgeRef.current = bindCharacterVoiceFromAudioEdge
 
   /** AI 生图并写回节点 */
   const generateNodeImage = useCallback(
@@ -898,11 +1011,23 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
     enabled: !loading,
     onSaved: () => {
       setDirty(false)
-      setSaveStatusVisible(true)
+      setSaveStatus('saved')
     },
     onError: (msg) => setErrorMessage(msg),
+    onStatus: setSaveStatus,
   })
   flushRef.current = flush
+
+  /** Ctrl+S：立刻落盘；无脏数据也刷一次以反馈「已保存」 */
+  const flushSave = useCallback(async () => {
+    if (!readyRef.current || loading) return
+    setSaveStatus('saving')
+    try {
+      await flush()
+    } catch {
+      // 错误文案已由 onError 写入
+    }
+  }, [flush, loading])
 
   /* 页面关闭前尽量刷一次保存 */
   useEffect(() => {
@@ -923,7 +1048,8 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
             (n.data.kind === 'character' ||
               n.data.kind === 'scene' ||
               n.data.kind === 'image' ||
-              n.data.kind === 'video'),
+              n.data.kind === 'video' ||
+              (n.data.kind === 'audio' && Boolean(n.data.mediaUrl))),
         )
         .map((n) => ({
           nodeId: n.id,
@@ -935,6 +1061,8 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
     [nodes],
   )
 
+  const saveStatusVisible = saveStatus === 'saved'
+
   const value = useMemo<CanvasStoreValue>(
     () => ({
       projectId,
@@ -943,6 +1071,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
       loading,
       errorMessage,
       saveStatusVisible,
+      saveStatus,
       snapToGrid,
       showMinimap,
       canUndo: history.past.length > 0,
@@ -975,6 +1104,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
       mentionableNodes,
       projectImageStyleId,
       freeCanvasMode,
+      flushSave,
     }),
     [
       projectId,
@@ -983,6 +1113,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
       loading,
       errorMessage,
       saveStatusVisible,
+      saveStatus,
       snapToGrid,
       showMinimap,
       history.past.length,
@@ -1009,6 +1140,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
       mentionableNodes,
       projectImageStyleId,
       freeCanvasMode,
+      flushSave,
     ],
   )
 

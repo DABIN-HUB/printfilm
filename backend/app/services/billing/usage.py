@@ -32,6 +32,9 @@ async def record_line(
     domain: str | None = None,
 ) -> UsageEvent:
     s = get_settings()
+    from app.services.tokenfree_pricing import ensure_official_rates
+
+    await ensure_official_rates(s)
     tid = task_run_id if task_run_id is not None else get_current_task_run_id()
     total = int(tokens) or (int(prompt_tokens) + int(completion_tokens))
     if total <= 0:
@@ -50,7 +53,7 @@ async def record_line(
     cost, charge, from_upstream = charge_fen_for_usage(
         total, billing_key, raw_usage=raw, settings=s, model=model
     )
-    if from_upstream:
+    if from_upstream or (isinstance(raw, dict) and raw.get("billing_basis") == "official_rule"):
         estimated = False
     elif total > 0 and not estimated:
         pass

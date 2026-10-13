@@ -145,23 +145,40 @@ function isVideoMediaUrl(url: string | null | undefined): boolean {
   return Boolean(url && VIDEO_URL_RE.test(url))
 }
 
+/** 瞬时断连 / 后端热重载导致的 Failed to fetch，轮询时应重试而非判失败 */
+function isTransientFetchError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err || '')
+  return /failed to fetch|networkerror|load failed|connection reset|连接被重置|网络/i.test(msg)
+}
+
 // 轮询直到资产生视频结束（必须等到 mp4，不能把旧封面图当完成）
 async function waitForAssetVideo(projectId: number, assetId: number): Promise<DramaAsset> {
   const started = Date.now()
+  let transientStreak = 0
   while (Date.now() - started < POLL_TIMEOUT_MS) {
-    const list = await dramaApi.listAssets(projectId)
-    const latest = list.find((a) => a.id === assetId)
-    if (!latest) throw new Error('资产不存在')
-    const status = readGenerationStatus(latest)
-    if (status === 'failed') {
-      const gen = (latest.params || {}).generation as { error?: string } | undefined
-      throw new Error(String(gen?.error || '生视频失败'))
-    }
-    if (status === 'done' && latest.url) {
-      return latest
-    }
-    if (status !== 'generating' && isVideoMediaUrl(latest.url)) {
-      return latest
+    try {
+      const list = await dramaApi.listAssets(projectId)
+      transientStreak = 0
+      const latest = list.find((a) => a.id === assetId)
+      if (!latest) throw new Error('资产不存在')
+      const status = readGenerationStatus(latest)
+      if (status === 'failed') {
+        const gen = (latest.params || {}).generation as { error?: string } | undefined
+        throw new Error(String(gen?.error || '生视频失败'))
+      }
+      if (status === 'done' && latest.url) {
+        return latest
+      }
+      if (status !== 'generating' && isVideoMediaUrl(latest.url)) {
+        return latest
+      }
+    } catch (err) {
+      if (isTransientFetchError(err) && transientStreak < 8) {
+        transientStreak += 1
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+        continue
+      }
+      throw err
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
   }

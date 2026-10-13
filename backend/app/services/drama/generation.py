@@ -1544,7 +1544,7 @@ async def prepare_fragment_video_for_submit(
         ref_assets=ref_assets,
     )
     ref_assets = await ensure_reference_assets_public_urls(db, ref_assets)
-    # 音色难控：暂不合成/补齐 reference_audio
+    # 已绑角色/旁白试听：补齐并提交 reference_audio
     if SEEDANCE_ATTACH_REFERENCE_AUDIO:
         ref_assets = await ensure_fragment_reference_audios(
             db,
@@ -1802,6 +1802,7 @@ async def apply_fragment_video_assets(
         domain="drama",
         task_result=task_result,
         fallback_duration_sec=fragment.duration_sec,
+        resolution=resolution,
         provider_task_id=provider_task_id,
         drama_project_id=project.id,
     )

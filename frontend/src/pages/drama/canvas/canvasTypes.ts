@@ -31,12 +31,13 @@ export type CanvasAssetNodeData = {
   [key: string]: unknown
 }
 
-/** 支持本地图片上传的节点类型 */
+/** 支持本地媒体上传的节点类型 */
 export const CANVAS_UPLOADABLE_KINDS = new Set<CanvasNodeKind>([
   'character',
   'scene',
   'image',
   'video',
+  'audio',
 ])
 
 /** 支持提示词 + AI 生成的节点类型 */
@@ -116,7 +117,7 @@ export const CANVAS_NODE_SIZE: Record<CanvasNodeKind, { width: number; height: n
   video: { width: 160, height: 240 },
   image: { width: 160, height: 240 },
   text: { width: 280, height: 140 },
-  audio: { width: 200, height: 100 },
+  audio: { width: 240, height: 120 },
 }
 
 /** 预览区默认尺寸（不含页脚；无媒体时用竖屏占位） */
@@ -139,7 +140,7 @@ export function canvasMediaFrameSize(
   aspect: number | null | undefined,
 ): { width: number; height: number } {
   if (kind === 'text') return { width: 280, height: 100 }
-  if (kind === 'audio') return { width: 200, height: 72 }
+  if (kind === 'audio') return { width: 240, height: 96 }
   const fallback = CANVAS_MEDIA_BODY_SIZE[kind]
   if (!aspect || !Number.isFinite(aspect) || aspect <= 0) return { ...fallback }
 

@@ -100,10 +100,18 @@ async def generate_asset_video(
     ref_assets = await load_reference_assets(db, project.id, ref_ids)
     ref_assets = await ensure_reference_assets_public_urls(db, ref_assets)
     ref_payloads = [drama_asset_to_payload(item) for item in ref_assets]
-    # catalog 参考资产；video_board_url 仅在已有角色/场景图时挂画风板
-    catalog = build_seedance_reference_catalog(ref_payloads)
+    # 与正式提交一致：带 script 判定开口角色，才能挂 reference_audio
+    catalog = build_seedance_reference_catalog(ref_payloads, script=content)
     board_url = resolve_image_style_board_url(style_id)
     video_board_url = board_url if catalog.images else ""
+    logger.info(
+        "画布资产生视频参考 project_id=%s asset_id=%s refs=%s images=%s audios=%s",
+        project.id,
+        asset.id,
+        [item.id for item in ref_assets],
+        len(catalog.images),
+        [a.url[:80] for a in catalog.audios],
+    )
 
     t0 = time.time()
     body = build_seedance_generate_body(
@@ -169,6 +177,7 @@ async def generate_asset_video(
         domain="drama",
         task_result=task_result,
         fallback_duration_sec=duration,
+        resolution=res,
         provider_task_id=getattr(task_result, "provider_task_id", None),
         drama_project_id=project.id,
     )

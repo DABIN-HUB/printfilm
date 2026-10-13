@@ -28,6 +28,31 @@ def seedance_billing_key(*, generate_audio: bool = True) -> str:
     return "seedance2:video0" if generate_audio else "seedance2:video1"
 
 
+def _stamp_video_billing_facts(
+    raw: dict[str, Any] | None,
+    *,
+    seconds: float | None,
+    resolution: str,
+) -> dict[str, Any] | None:
+    """把时长和清晰度写进 usage，供 TokenFree 秒价表达式结算。"""
+    try:
+        secs = float(seconds) if seconds is not None else 0.0
+    except (TypeError, ValueError):
+        secs = 0.0
+    res = (resolution or "").strip().lower()
+    if secs <= 0 and not res:
+        return raw
+    body = dict(raw or {})
+    usage = dict(body.get("usage") or {}) if isinstance(body.get("usage"), dict) else {}
+    if secs > 0:
+        usage.setdefault("seconds", secs)
+    if res:
+        usage.setdefault("resolution", res)
+    usage.setdefault("input_video_seconds", float(usage.get("input_video_seconds") or 0))
+    body["usage"] = usage
+    return body
+
+
 # 匹配 raw JSON 中的 provider_task_id 字段（带 key，避免裸 ID 子串误伤；兼容 dumps 空格）
 def _provider_task_id_match(provider_id: str):
     pid = provider_id.replace("\\", "\\\\").replace('"', '\\"')
@@ -46,6 +71,7 @@ async def record_seedance_video_usage(
     domain: str,
     task_result: TaskResult | None = None,
     fallback_duration_sec: float | None = None,
+    resolution: str = "",
     provider_task_id: str | None = None,
     drama_project_id: int | None = None,
     project_id: int | None = None,
@@ -126,6 +152,11 @@ async def record_seedance_video_usage(
         raw = {"usage": {}}
     if provider_id:
         raw = {**(raw or {}), "provider_task_id": provider_id}
+    raw = _stamp_video_billing_facts(
+        raw,
+        seconds=fallback_duration_sec,
+        resolution=resolution,
+    )
 
     from app.services.billing.pricing import parse_upstream_cost_fen
 

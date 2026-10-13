@@ -131,6 +131,9 @@ async def _record_seedance_usage(
             project = await db.get(Project, project_id)
             if not project:
                 return
+            res = str(getattr(get_settings(), "ark_video_resolution", "") or "480p")
+            if str(getattr(project, "resolution_mode", "") or "") == "hd" and res.strip().lower() == "480p":
+                res = "720p"
             await record_seedance_video_usage(
                 db,
                 user_id=project.user_id,
@@ -139,6 +142,7 @@ async def _record_seedance_usage(
                 domain="kepu",
                 task_result=task_result,
                 fallback_duration_sec=fallback_duration_sec,
+                resolution=res,
                 provider_task_id=getattr(task_result, "provider_task_id", None),
                 project_id=project_id,
                 shot_id=shot_id,

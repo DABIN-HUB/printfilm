@@ -1,19 +1,30 @@
-/** 画布顶栏：返回、标题、已保存指示、设置占位 */
+/** 画布顶栏：返回、标题、保存状态、设置占位 */
 import { useState } from 'react'
 import { ChevronLeft, Maximize2, Settings } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useCanvasStore } from './CanvasStore'
+import type { CanvasSaveStatus } from './useCanvasAutoSave'
 
 type Props = {
   variant?: 'fullscreen' | 'embedded'
 }
 
+/** 保存状态文案 */
+function saveStatusLabel(status: CanvasSaveStatus): string | null {
+  if (status === 'dirty') return '未保存'
+  if (status === 'saving') return '保存中…'
+  if (status === 'saved') return '已保存'
+  if (status === 'error') return '保存失败'
+  return null
+}
+
 /** 渲染画布页顶部工具栏 */
 export function CanvasTopBar({ variant = 'fullscreen' }: Props) {
   const navigate = useNavigate()
-  const { saveStatusVisible, projectId, freeCanvasMode } = useCanvasStore()
+  const { saveStatus, projectId, freeCanvasMode } = useCanvasStore()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const embedded = variant === 'embedded'
+  const statusText = saveStatusLabel(saveStatus)
 
   return (
     <>
@@ -40,10 +51,20 @@ export function CanvasTopBar({ variant = 'fullscreen' }: Props) {
           <span className="fc-topbar-title">
             {embedded ? '资产画布' : freeCanvasMode ? '自由画布' : '资产库编排'}
           </span>
-          {saveStatusVisible ? (
-            <span className="fc-save-pill">
+          {statusText ? (
+            <span
+              className={`fc-save-pill${
+                saveStatus === 'error'
+                  ? ' is-error'
+                  : saveStatus === 'dirty'
+                    ? ' is-dirty'
+                    : saveStatus === 'saving'
+                      ? ' is-saving'
+                      : ''
+              }`}
+            >
               <span className="fc-save-dot" />
-              已保存
+              {statusText}
             </span>
           ) : null}
         </div>

@@ -30,6 +30,7 @@ function CanvasWorkspaceContent({
     undo,
     redo,
     loading,
+    flushSave,
   } = useCanvasStore()
   const { screenToFlowPosition } = useReactFlow()
   const embedded = variant === 'embedded'
@@ -43,12 +44,17 @@ function CanvasWorkspaceContent({
     [addNodeOfKind, screenToFlowPosition],
   )
 
-  /* Ctrl/Cmd+Z / Ctrl+Shift+Z / Ctrl+Y */
+  /* Ctrl/Cmd+S 保存；Ctrl/Cmd+Z / Ctrl+Shift+Z / Ctrl+Y 撤销重做 */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const meta = event.metaKey || event.ctrlKey
       if (!meta) return
       const key = event.key.toLowerCase()
+      if (key === 's') {
+        event.preventDefault()
+        void flushSave()
+        return
+      }
       if (key === 'z' && !event.shiftKey) {
         event.preventDefault()
         undo()
@@ -59,7 +65,7 @@ function CanvasWorkspaceContent({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [undo, redo])
+  }, [undo, redo, flushSave])
 
   return (
     <div className={`free-canvas-page${embedded ? ' is-embedded' : ''}`}>

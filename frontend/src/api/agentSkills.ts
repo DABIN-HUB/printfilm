@@ -82,7 +82,7 @@ export function deleteAgentSkill(skillId: number) {
   return request<{ ok: boolean }>(`/api/drama/skills/${skillId}`, { method: 'DELETE' })
 }
 
-/** 按勾选 Skill 优化提示词（保留 @asset 引用） */
+/** 描述优化：按勾选 Skill 改写提示词（保留 @asset 与台词） */
 export function optimizePromptWithSkills(body: {
   prompt: string
   skill_ids: number[]

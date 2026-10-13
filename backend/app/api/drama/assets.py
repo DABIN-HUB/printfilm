@@ -185,7 +185,7 @@ async def upload_asset_media(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> DramaAssetOut:
-    """Upload image/media for a drama asset directly to OSS (no local persist)."""
+    """上传图片或音频到 OSS（不落本地）；音频资产不写 cover。"""
     from app.models_drama import DramaProject
     from app.services import oss as oss_svc
 
@@ -207,14 +207,28 @@ async def upload_asset_media(
         raise HTTPException(status_code=409, detail="形象生成中，请稍后再更换图片")
 
     content_type = (file.content_type or "").lower()
-    allowed = {
+    image_allowed = {
         "image/jpeg": ".jpg",
         "image/jpg": ".jpg",
         "image/png": ".png",
         "image/webp": ".webp",
         "image/gif": ".gif",
     }
-    ext = allowed.get(content_type)
+    audio_allowed = {
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/wave": ".wav",
+        "audio/mp4": ".m4a",
+        "audio/m4a": ".m4a",
+        "audio/x-m4a": ".m4a",
+        "audio/aac": ".aac",
+        "audio/ogg": ".ogg",
+        "audio/webm": ".webm",
+    }
+    ext = image_allowed.get(content_type) or audio_allowed.get(content_type)
+    is_audio = content_type in audio_allowed
     if not ext:
         suffix = Path(file.filename or "").suffix.lower()
         if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
@@ -225,8 +239,20 @@ async def upload_asset_media(
                 ".webp": "image/webp",
                 ".gif": "image/gif",
             }.get(ext, "application/octet-stream")
+            is_audio = False
+        elif suffix in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".webm"}:
+            ext = suffix
+            content_type = {
+                ".mp3": "audio/mpeg",
+                ".wav": "audio/wav",
+                ".m4a": "audio/mp4",
+                ".aac": "audio/aac",
+                ".ogg": "audio/ogg",
+                ".webm": "audio/webm",
+            }.get(ext, "application/octet-stream")
+            is_audio = True
         else:
-            raise HTTPException(status_code=400, detail="仅支持 JPG / PNG / WebP / GIF")
+            raise HTTPException(status_code=400, detail="仅支持图片（JPG/PNG/WebP/GIF）或音频（MP3/WAV/M4A 等）")
 
     # 直接检查上传临时文件大小，避免先把整文件读入内存。
     upload_fp = file.file
@@ -238,8 +264,12 @@ async def upload_asset_media(
         raise HTTPException(status_code=400, detail=f"无法读取上传文件：{exc}") from exc
     if size <= 0:
         raise HTTPException(status_code=400, detail="空文件")
-    if size > 20 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="文件不能超过 20MB")
+    max_bytes = 30 * 1024 * 1024 if is_audio else 20 * 1024 * 1024
+    if size > max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="音频不能超过 30MB" if is_audio else "文件不能超过 20MB",
+        )
 
     object_key = (
         f"{oss_svc.folder_prefix()}/generated/p{asset.project_id}/"
@@ -258,11 +288,19 @@ async def upload_asset_media(
 
     from app.services.drama.generation import archive_asset_image_version
 
-    archive_asset_image_version(asset, source="upload")
+    if not is_audio:
+        archive_asset_image_version(asset, source="upload")
     asset.url = url
-    asset.cover = url
-    if not asset.asset_type or asset.asset_type == "none":
-        asset.asset_type = "image"
+    if is_audio:
+        # 音频资产不把 mp3 写进 cover，避免前端当图片加载
+        if not asset.asset_type or asset.asset_type in {"none", "image"}:
+            asset.asset_type = "audio"
+        if (asset.type or "").lower() in {"", "none", "image", "prop"}:
+            asset.type = "audio"
+    else:
+        asset.cover = url
+        if not asset.asset_type or asset.asset_type == "none":
+            asset.asset_type = "image"
     params = dict(asset.params or {})
     gen = params.get("generation")
     if isinstance(gen, dict):

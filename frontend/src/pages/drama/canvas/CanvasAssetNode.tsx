@@ -19,7 +19,7 @@ import {
 } from '@xyflow/react'
 import { AudioLines, Image as ImageIcon, Landmark, Loader2, Maximize2, Play, UserRound } from 'lucide-react'
 import { resolveDramaMediaUrl } from '../../../api/drama'
-import { isAudioUrl, isPlayableVideoUrl } from '../../../lib/canvasNodeMedia'
+import { isPlayableVideoUrl } from '../../../lib/canvasNodeMedia'
 import { useCanvasStore } from './CanvasStore'
 import {
   CANVAS_GENERATABLE_KINDS,
@@ -109,9 +109,14 @@ function CanvasAssetNodeComponent({ id, data, selected }: NodeProps<Node<CanvasA
   const [draftName, setDraftName] = useState(displayName)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [mediaAspect, setMediaAspect] = useState<number | null>(null)
-  const audioSrc = resolveDramaMediaUrl(voiceUrl || (data.kind === 'audio' ? mediaSrc : ''))
+  // 音频节点用 mediaUrl；角色音色只用 voiceUrl 做预览弹层，卡片内仍显示形象图
+  const voiceSrc = data.kind === 'character' ? resolveDramaMediaUrl(voiceUrl) : ''
+  const audioSrc =
+    data.kind === 'audio' ? mediaSrc || resolveDramaMediaUrl(voiceUrl) : voiceSrc
   const textContent = typeof data.textContent === 'string' ? data.textContent : ''
   const canPreview = Boolean(mediaSrc || audioSrc || textContent.trim())
+  // 仅「音频」节点内联播放器；角色有音色时仍显示形象图，试听走工具条
+  const showInlineAudio = data.kind === 'audio' && Boolean(audioSrc)
   const frameSize = canvasMediaFrameSize(data.kind, mediaSrc ? mediaAspect : null)
   const orientationClass =
     mediaSrc && mediaAspect
@@ -265,12 +270,18 @@ function CanvasAssetNodeComponent({ id, data, selected }: NodeProps<Node<CanvasA
             </div>
           ) : mediaSrc && data.kind === 'video' && isPlayableVideoUrl(mediaSrc) ? (
             <CanvasAssetVideoPreview src={mediaSrc} onAspect={handleVideoAspect} />
-          ) : mediaSrc && (data.kind === 'audio' || isAudioUrl(mediaSrc)) ? (
+          ) : showInlineAudio ? (
             <div className="fc-asset-audio-thumb">
-              <AudioLines size={28} strokeWidth={1.6} />
-              <span className="fc-asset-video-play" aria-hidden>
-                <Play size={18} strokeWidth={2.2} fill="currentColor" />
-              </span>
+              <AudioLines size={22} strokeWidth={1.6} />
+              <audio
+                className="fc-asset-audio-player nodrag nopan nowheel"
+                src={audioSrc}
+                controls
+                preload="metadata"
+                onClick={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+                onDoubleClick={(event) => event.stopPropagation()}
+              />
             </div>
           ) : mediaSrc ? (
             <img
@@ -330,7 +341,7 @@ function CanvasAssetNodeComponent({ id, data, selected }: NodeProps<Node<CanvasA
             kind: data.kind,
             title: displayName,
             mediaUrl: mediaSrc || null,
-            voiceUrl: audioSrc || null,
+            voiceUrl: (data.kind === 'audio' ? audioSrc : voiceSrc) || null,
             textContent,
           }}
           onClose={() => setPreviewOpen(false)}

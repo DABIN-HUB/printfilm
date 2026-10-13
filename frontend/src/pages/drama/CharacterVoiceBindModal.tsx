@@ -1,7 +1,15 @@
-/** 角色音色绑定：从漫剧 voice 资产选择，写入 params 供 Seedance reference_audio 使用 */
+/** 角色音色绑定：选择 / 上传 / AI 合成试听，写入 params.voiceAudio */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { dramaApi, resolveDramaMediaUrl, type DramaAsset } from '../../api/drama'
 import Modal from '../../components/ui/Modal'
+
+const AUDIO_ACCEPT = 'audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/m4a,.mp3,.wav,.m4a'
+
+/** 是否可作为角色音色资产 */
+function isVoiceLikeAsset(asset: DramaAsset): boolean {
+  const t = (asset.type || '').toLowerCase()
+  return t === 'voice' || t === 'audio'
+}
 
 export type VoiceBinding = {
   sourceAssetId: number
@@ -107,13 +115,11 @@ export function CharacterVoiceBindModal({
   onError,
 }: Props) {
   /*
-   * voiceAssets 项目内 voice 资产
+   * voiceAssets 项目内 voice/audio 资产
    * selectedId 选中音色
-   * newPrompt 新建音色描述
-   * newName 新建音色名称
-   * busy 提交中
-   * synthBusy 合成中
-   * promptBusy AI 生成提示词中
+   * newPrompt / newName 新建合成表单
+   * busy / synthBusy / promptBusy / uploadBusy 各操作中
+   * mode pick | upload | create
    */
   const [voiceAssets, setVoiceAssets] = useState<DramaAsset[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -122,9 +128,11 @@ export function CharacterVoiceBindModal({
   const [busy, setBusy] = useState(false)
   const [synthBusy, setSynthBusy] = useState(false)
   const [promptBusy, setPromptBusy] = useState(false)
+  const [uploadBusy, setUploadBusy] = useState(false)
   const [suggestedSpeaker, setSuggestedSpeaker] = useState('')
-  const [mode, setMode] = useState<'pick' | 'create'>('pick')
+  const [mode, setMode] = useState<'pick' | 'upload' | 'create'>('pick')
   const promptRequestedRef = useRef(false)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
 
   const bound = useMemo(() => readAssetVoiceBinding(asset), [asset])
   const selectedVoice = voiceAssets.find((v) => v.id === selectedId) || null
@@ -167,19 +175,19 @@ export function CharacterVoiceBindModal({
     dramaApi
       .listAssets(projectId)
       .then((list) => {
-        const voices = list.filter((a) => (a.type || '').toLowerCase() === 'voice')
+        const voices = list.filter(isVoiceLikeAsset)
         setVoiceAssets(voices)
         if (!bound?.sourceAssetId && voices[0]) {
           setSelectedId(voices[0].id)
         }
         if (voices.length === 0) {
-          setMode('create')
+          setMode('upload')
         }
       })
-      .catch((err) => onError(err instanceof Error ? err.message : '加载音色资产失败'))
+      .catch((err) => onError(err instanceof Error ? err.message : '加载音色失败'))
   }, [open, asset, projectId, bound?.sourceAssetId, onError])
 
-  // 进入「新建并合成」时自动 AI 生成音色描述
+  // 进入「AI 合成」时自动生成音色描述
   useEffect(() => {
     if (!open || mode !== 'create' || promptRequestedRef.current) return
     promptRequestedRef.current = true
@@ -187,6 +195,41 @@ export function CharacterVoiceBindModal({
   }, [open, mode, fetchVoicePrompt])
 
   if (!open) return null
+
+  const anyBusy = busy || synthBusy || promptBusy || uploadBusy
+
+  // 本地上传音频并记为音色资产
+  async function handleUploadAudio(file: File) {
+    if (uploadBusy) return
+    if (!file.type.startsWith('audio/') && !/\.(mp3|wav|m4a)$/i.test(file.name)) {
+      onError('请上传 mp3 / wav / m4a 音频文件')
+      return
+    }
+    setUploadBusy(true)
+    try {
+      const baseName = file.name.replace(/\.[^.]+$/, '').trim()
+      const created = await dramaApi.createAsset({
+        project_id: projectId,
+        type: 'voice',
+        asset_type: 'audio',
+        name: baseName || `${asset.name || '角色'}音色`,
+        params: {
+          source: 'upload',
+          originalFilename: file.name,
+        },
+      })
+      const uploaded = await dramaApi.uploadAssetMedia(created.id, file)
+      if (!(uploaded.url || '').trim()) throw new Error('上传成功但未得到可播放地址')
+      setVoiceAssets((prev) => [uploaded, ...prev.filter((v) => v.id !== uploaded.id)])
+      setSelectedId(uploaded.id)
+      setMode('pick')
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '上传失败')
+    } finally {
+      setUploadBusy(false)
+      if (uploadInputRef.current) uploadInputRef.current.value = ''
+    }
+  }
 
   // 按提示词新建并合成 voice 资产
   async function handleCreateAndSynth() {
@@ -239,7 +282,7 @@ export function CharacterVoiceBindModal({
   // 确认绑定到角色
   async function handleConfirm() {
     if (!selectedVoice?.url || busy) {
-      onError('请选择已合成试听的音色资产')
+      onError('请先选择或上传一段可试听的音频')
       return
     }
     setBusy(true)
@@ -285,15 +328,20 @@ export function CharacterVoiceBindModal({
       onClose={onClose}
       title="绑定音色"
       size="lg"
-      dismissible={!busy}
+      dismissible={!anyBusy}
       className="drama-voice-bind-modal"
       footer={
         <>
-          <button type="button" className="pf-btn" onClick={onClose} disabled={busy}>
+          <button type="button" className="pf-btn" onClick={onClose} disabled={anyBusy}>
             取消
           </button>
           {bound ? (
-            <button type="button" className="pf-btn" onClick={() => void handleUnbind()} disabled={busy}>
+            <button
+              type="button"
+              className="pf-btn"
+              onClick={() => void handleUnbind()}
+              disabled={anyBusy}
+            >
               解除绑定
             </button>
           ) : null}
@@ -301,7 +349,7 @@ export function CharacterVoiceBindModal({
             type="button"
             className="pf-btn pf-btn-lime"
             onClick={() => void handleConfirm()}
-            disabled={!selectedVoice?.url || busy}
+            disabled={!selectedVoice?.url || anyBusy}
           >
             {busy ? '绑定中…' : '确认绑定'}
           </button>
@@ -309,7 +357,11 @@ export function CharacterVoiceBindModal({
       }
     >
       <p className="drama-muted">
-        为「{asset.name || '角色'}」选择漫剧音色资产。音色将随分镜 Seedance 生成作为 reference_audio 提交。
+        给「{asset.name || '角色'}」配上说话声音。选一段试听、上传录音，或用 AI
+        合成都可以。之后生成带对白的镜头时，会尽量按这段声音来念。
+      </p>
+      <p className="drama-muted" style={{ marginTop: -6, fontSize: 12 }}>
+        画布里也可以把「音频」节点连到角色，效果一样。
       </p>
 
       <div className="drama-voice-mode-tabs">
@@ -317,8 +369,17 @@ export function CharacterVoiceBindModal({
           type="button"
           className={mode === 'pick' ? 'active' : ''}
           onClick={() => setMode('pick')}
+          disabled={anyBusy}
         >
           选择已有
+        </button>
+        <button
+          type="button"
+          className={mode === 'upload' ? 'active' : ''}
+          onClick={() => setMode('upload')}
+          disabled={anyBusy}
+        >
+          上传音频
         </button>
         <button
           type="button"
@@ -329,18 +390,25 @@ export function CharacterVoiceBindModal({
               promptRequestedRef.current = false
             }
           }}
+          disabled={anyBusy}
         >
-          新建并合成
+          AI 合成
         </button>
       </div>
 
       {mode === 'pick' ? (
         <div className="drama-voice-list">
           {voiceAssets.length === 0 ? (
-            <p className="drama-muted">暂无音色资产，请切换到「新建并合成」</p>
+            <p className="drama-muted">还没有可用音色，请先「上传音频」或「AI 合成」。</p>
           ) : (
             voiceAssets.map((voice) => {
               const hasAudio = Boolean(voice.url)
+              const canResynth = Boolean(readVoicePrompt(voice))
+              const statusLabel = !hasAudio
+                ? '待生成'
+                : canResynth
+                  ? '已合成'
+                  : '已上传'
               return (
                 <label key={voice.id} className="drama-voice-option">
                   <input
@@ -351,9 +419,9 @@ export function CharacterVoiceBindModal({
                   />
                   <span>
                     {voice.name || `音色#${voice.id}`}
-                    <small>{hasAudio ? '已合成' : '未合成'}</small>
+                    <small>{statusLabel}</small>
                   </span>
-                  {hasAudio ? (
+                  {hasAudio && canResynth ? (
                     <button
                       type="button"
                       className="pf-btn pf-btn-sm"
@@ -371,6 +439,30 @@ export function CharacterVoiceBindModal({
             })
           )}
         </div>
+      ) : mode === 'upload' ? (
+        <div className="drama-voice-create-form">
+          <p className="drama-muted" style={{ margin: 0 }}>
+            支持 mp3 / wav / m4a。建议 2 秒以上的清晰人声，效果更稳。
+          </p>
+          <input
+            ref={uploadInputRef}
+            type="file"
+            accept={AUDIO_ACCEPT}
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) void handleUploadAudio(file)
+            }}
+          />
+          <button
+            type="button"
+            className="pf-btn pf-btn-lime"
+            disabled={uploadBusy}
+            onClick={() => uploadInputRef.current?.click()}
+          >
+            {uploadBusy ? '上传中…' : '选择音频文件'}
+          </button>
+        </div>
       ) : (
         <div className="drama-voice-create-form">
           <label className="drama-field">
@@ -379,32 +471,36 @@ export function CharacterVoiceBindModal({
               type="text"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              placeholder="例如：大禹-沉稳男声"
+              placeholder="例如：沉稳男声、俏皮少女"
             />
           </label>
           <label className="drama-field">
             <span className="drama-voice-prompt-label">
-              音色描述（提示词）
+              声音什么样（随便写）
               <button
                 type="button"
                 className="pf-btn pf-btn-sm"
                 disabled={promptBusy || synthBusy}
                 onClick={() => void fetchVoicePrompt(true)}
               >
-                {promptBusy ? 'AI 生成中…' : 'AI 重新生成'}
+                {promptBusy ? '生成中…' : '按角色设定帮我写'}
               </button>
             </span>
             <textarea
               rows={4}
-              value={promptBusy && !newPrompt ? 'AI 正在根据角色设定生成音色描述…' : newPrompt}
+              value={
+                promptBusy && !newPrompt
+                  ? '正在根据角色设定写一段声音描述…'
+                  : newPrompt
+              }
               readOnly={promptBusy && !newPrompt}
               onChange={(e) => setNewPrompt(e.target.value)}
-              placeholder="将根据角色身份、性格、外形等自动生成，也可手动编辑"
+              placeholder="例如：三十岁左右男性，声音沉稳偏磁性，语速不急…"
             />
           </label>
           {suggestedSpeaker ? (
             <p className="drama-muted" style={{ margin: 0, fontSize: 12 }}>
-              推荐声线：<code>{suggestedSpeaker}</code>（不同角色会自动匹配不同 TTS 发音人）
+              已匹配声线：{suggestedSpeaker}
             </p>
           ) : null}
           <button
@@ -413,7 +509,7 @@ export function CharacterVoiceBindModal({
             disabled={!newPrompt.trim() || synthBusy || promptBusy}
             onClick={() => void handleCreateAndSynth()}
           >
-            {synthBusy ? '合成中…' : '按提示词合成试听'}
+            {synthBusy ? '合成中…' : '合成试听'}
           </button>
         </div>
       )}

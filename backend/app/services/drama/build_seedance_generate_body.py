@@ -37,9 +37,8 @@ SEEDANCE_VISUAL_STYLE_SECTION_INTRO = (
     "【强制约束：视频画面风格】全片画面必须严格遵循以下风格描述，"
     "严禁偏离、弱化或混用其他画风与镜头美学："
 )
-# 音色难控：暂不提交 reference_audio、不写音色约束；口播由 Seedance generate_audio 自发挥。
-# 恢复绑定/提交时改回 True。
-SEEDANCE_ATTACH_REFERENCE_AUDIO = False
+# 提交角色/旁白试听为 Seedance reference_audio，并写入音色强制约束。
+SEEDANCE_ATTACH_REFERENCE_AUDIO = True
 SEEDANCE_CHARACTER_VOICE_SECTION_HEADER = (
     "【强制约束：角色音色】以下角色说话的音色、语气、节奏与发声质感必须与对应参考音频严格一致，"
     "语速自然偏慢、吐字清晰，严禁加速赶词、替换、混用其他声线或自行改写："
@@ -224,16 +223,33 @@ def _prepare_voice_script(content: str | None) -> str:
     return rewrite_misclassified_visual_voice_lines(normalized)
 
 
+# 画布自由提示词里的口播迹象（非「角色名：台词」格式）
+_FREEFORM_SPEECH_RE = re.compile(
+    r"(?:说(?:道|着)?[：:\s]|\{[^{}\n]{2,}\}|张嘴|开口说话|对白|台词|口播|念出|大声说)",
+)
+
+
+def _script_has_freeform_speech(script: str) -> bool:
+    """画布常见写法：说 xxx / {台词} / 张嘴说话。"""
+    return bool(_FREEFORM_SPEECH_RE.search(script or ""))
+
+
 def collect_speaking_character_names(
     script: str,
     reference: list[dict[str, Any]] | None,
 ) -> set[str]:
-    """从对白/旁白/独白行收集本镜开口的角色名（含 @asset 引用）。"""
+    """从对白/旁白/独白行收集本镜开口的角色名（含 @asset 引用）。
+
+    分镜剧本用「角色名：台词」；自由画布常用「说 …」，后者在标号对白扫不到时
+    回退：有口播迹象则把正文中出现的角色名（或唯一角色）视为开口。
+    """
     names_by_id: dict[int, str] = {}
     aliases: list[str] = []
+    character_assets: list[dict[str, Any]] = []
     for asset in reference or []:
         if asset.get("type") != "character":
             continue
+        character_assets.append(asset)
         prompt_name = resolve_character_prompt_name(asset)
         names_by_id[int(asset["id"])] = prompt_name
         aliases.append(prompt_name)
@@ -260,6 +276,30 @@ def collect_speaking_character_names(
             if _name_is_token_prefix(body, name):
                 spoken.add(name)
                 break
+
+    if spoken or not character_assets or not _script_has_freeform_speech(script):
+        return spoken
+
+    # 自由画布：正文提到的角色视为开口；只连了一个角色则默认他开口
+    blob = script or ""
+    for asset in character_assets:
+        prompt_name = resolve_character_prompt_name(asset)
+        raw_name = str(asset.get("name") or "").strip()
+        if (prompt_name and prompt_name in blob) or (raw_name and raw_name in blob):
+            if prompt_name:
+                spoken.add(prompt_name)
+            if raw_name:
+                spoken.add(raw_name)
+    if spoken:
+        return spoken
+    if len(character_assets) == 1:
+        only = character_assets[0]
+        prompt_name = resolve_character_prompt_name(only)
+        raw_name = str(only.get("name") or "").strip()
+        if prompt_name:
+            spoken.add(prompt_name)
+        if raw_name:
+            spoken.add(raw_name)
     return spoken
 
 
@@ -306,7 +346,6 @@ def build_seedance_reference_catalog(
             seen_image_asset_ids.add(asset_id)
             catalog.images.append(SeedanceReferenceFile(asset_id=asset_id, url=image_url))
 
-        # 已绑定的试听暂不挂进 content[]，避免 reference_audio 抢模型口播
         if SEEDANCE_ATTACH_REFERENCE_AUDIO and asset.get("type") in {"character", "narration"}:
             if not _should_attach_reference_audio(
                 asset,
@@ -319,6 +358,12 @@ def build_seedance_reference_catalog(
             if voice_audio_url and asset_id not in seen_audio_asset_ids:
                 seen_audio_asset_ids.add(asset_id)
                 catalog.audios.append(SeedanceReferenceFile(asset_id=asset_id, url=voice_audio_url))
+        elif SEEDANCE_ATTACH_REFERENCE_AUDIO and asset.get("type") == "audio":
+            # 画布独立音频节点：直接用资产 url 作为 reference_audio
+            audio_url = str(asset.get("url") or asset.get("cover") or "").strip()
+            if audio_url and asset_id not in seen_audio_asset_ids:
+                seen_audio_asset_ids.add(asset_id)
+                catalog.audios.append(SeedanceReferenceFile(asset_id=asset_id, url=audio_url))
 
     catalog.image_index_by_asset_id = {
         item.asset_id: index + 1 for index, item in enumerate(catalog.images)

@@ -163,17 +163,16 @@ LLM 分镜**禁止**直接输出 `@asset` / `@duration` / `【字幕】【BGM】
 - 稳定优先：主体参考图约 **1–8**，勿一镜塞满 30 张  
 - `character_names`：仅正文点到的出镜角色；群演可省略  
 
-### 4.2 音色（暂关）
+### 4.2 音色与 reference_audio
 
-当前**不绑定、不提交** `reference_audio`。口播由 Seedance `generate_audio` 按对白/旁白自行发挥。角色图仍作 `reference_image`。
+已绑定试听的角色 / 项目旁白，在本镜**开口**时会提交 `reference_audio`（`SEEDANCE_ATTACH_REFERENCE_AUDIO=true`）。未绑定或本镜未开口的角色只挂形象图。缺音色生成前为**警告级**（可继续），不硬拦截。
 
 | 规则 | 说明 |
 |------|------|
-| 要对白的角色 | 不强制试听；写清对白即可 |
+| 要对白的角色 | 建议绑定试听（资产库 / 分集 / 画布均可）；未绑则由 `generate_audio` 自发挥 |
 | 角色 VO | `角色（vo）：台词` 走对白/内心独白，不是第三人称旁白；纯 `角色（vo，情绪）。` 是舞台指示，禁止口播 |
-| 旁白 | 第三人称旁白行由模型配音，不挂项目级旁白音频 |
-
-<!-- 恢复绑定后改回：要对白的角色必须绑定试听；未开口角色只挂形象图 -->
+| 旁白 | 第三人称旁白行：有项目级 `narrationVoiceAudio` 则挂旁白参考音，否则模型配音 |
+| 参考音频时长 | 单条目标约 15s，上限约 30s；过短/过长由 `voice_reference_audio` 截断补足 |
 
 ### 4.3 人物介绍叠字
 
@@ -225,7 +224,7 @@ AI 重新分镜（`fragment_plan`）须按上述公式输出画面行；单镜�
 | 字段 | 来源 |
 |------|------|
 | `model` | 顶栏模型 |
-| `content[]` | text 提示词 + reference_image（暂不提交 reference_audio） |
+| `content[]` | text 提示词 + reference_image + 开口角色/旁白的 reference_audio |
 | `duration` | `@duration` 合计（4–30） |
 | `ratio` / `resolution` | 顶栏 |
 | `generate_audio` | `true`（短剧口播） |
@@ -236,10 +235,9 @@ AI 重新分镜（`fragment_plan`）须按上述公式输出画面行；单镜�
 
 1. 画面风格强制约束  
 2. 音频/字幕/BGM 强制约束（区分画面-only vs 对白/旁白）  
-3. 角色形象 / 场景 / 道具 → 参考图序号  
-4. 正文（已替换 asset / duration）  
-
-（角色/旁白音色 → 参考音频序号：暂关）  
+3. 角色音色 / 旁白音色 → 参考音频序号（已绑且本镜开口时）  
+4. 角色形象 / 场景 / 道具 → 参考图序号  
+5. 正文（已替换 asset / duration）  
 
 ---
 

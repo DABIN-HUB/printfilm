@@ -226,7 +226,7 @@ export function CanvasNodeGeneratePanel({
         updateNodePrompt(nodeId, next)
       }
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Skill 优化失败')
+      setErrorMessage(err instanceof Error ? err.message : '描述优化失败')
     } finally {
       setOptimizing(false)
     }
@@ -310,11 +310,15 @@ export function CanvasNodeGeneratePanel({
             type="button"
             className="fc-generate-optimize"
             disabled={!canOptimize}
-            title={selectedIds.length ? '按所选 Skill 改写提示词' : '请先选择 Skill'}
+            title={
+              selectedIds.length
+                ? '优化画面描述，并保留台词与 @ 引用'
+                : '请先选择 Skill'
+            }
             onClick={() => void optimizePrompt()}
           >
             {optimizing ? <Loader2 size={14} className="fc-spin" /> : <Wand2 size={14} strokeWidth={1.8} />}
-            Skill 优化
+            描述优化
           </button>
           <button type="submit" className="fc-generate-submit" disabled={!canSubmit} aria-label="生成">
             {isBusy && !optimizing ? (

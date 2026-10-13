@@ -252,6 +252,13 @@ async def settle_task(db: AsyncSession, task_id: int) -> dict[str, int]:
         )
     )
     events = list(result.scalars().all())
+    if events:
+        try:
+            from app.services.billing.newapi_bill import apply_newapi_bills
+
+            await apply_newapi_bills(events)
+        except Exception:  # noqa: BLE001
+            logger.exception("New API 账单对账失败，沿用已记录费用 task=%s", task_id)
     # 用量已结但状态仍 frozen（异常中断）：按已落账实扣对齐，禁止把整笔预扣当退款
     if (
         task.billing_status == "frozen"

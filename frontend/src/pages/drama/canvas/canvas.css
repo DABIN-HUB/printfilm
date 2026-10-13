@@ -124,6 +124,41 @@
   background: #22c55e;
 }
 
+.fc-save-pill.is-dirty {
+  color: #a16207;
+}
+
+.fc-save-pill.is-dirty .fc-save-dot {
+  background: #eab308;
+}
+
+.fc-save-pill.is-saving {
+  color: #64748b;
+}
+
+.fc-save-pill.is-saving .fc-save-dot {
+  background: #94a3b8;
+  animation: fc-save-pulse 1s ease-in-out infinite;
+}
+
+.fc-save-pill.is-error {
+  color: #b91c1c;
+}
+
+.fc-save-pill.is-error .fc-save-dot {
+  background: #ef4444;
+}
+
+@keyframes fc-save-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
 .fc-icon-btn {
   display: inline-flex;
   align-items: center;
@@ -250,10 +285,10 @@
   color: #334155;
 }
 
-/* 空白双击新建菜单 */
+/* 空白双击新建菜单（高于顶栏） */
 .fc-pane-add-menu {
   position: fixed;
-  z-index: 40;
+  z-index: 60;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -969,10 +1004,21 @@
   position: relative;
   width: 100%;
   height: 100%;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 12px;
+  box-sizing: border-box;
   color: #94a3b8;
   background: #f8fafc;
+}
+
+.fc-asset-audio-player {
+  width: 100%;
+  height: 32px;
+  max-width: 100%;
 }
 
 .fc-asset-video-play {
