@@ -261,9 +261,17 @@ def _capability_aliases(capability: LogicalModelCapability) -> dict[str, str]:
     if capability == "video":
         return {
             "seedance-2.5": "seedance-2.5",
-            "seedance-2": "seedance-2",
-            "seedance-1.5": "seedance-2",
-            "seedance-1": "seedance-2",
+            "seedance-2-5": "seedance-2.5",
+            "seedance-2.0": "seedance-2.0",
+            "seedance-2-0": "seedance-2.0",
+            "seedance-2": "seedance-2.0",
+            "seedance-2.0-mini": "seedance-2.0",
+            "seedance-2-0-mini": "seedance-2.0",
+            "doubao-seedance-2-0-mini-260615": "seedance-2.0",
+            "seedance-2.0-fast": "seedance-2.0-fast",
+            "seedance-2-0-fast": "seedance-2.0-fast",
+            "seedance-1.5": "seedance-2.0",
+            "seedance-1": "seedance-2.0",
         }
     return {}
 
@@ -292,7 +300,15 @@ def _legacy_upstream_fallback(
         route = resolve_logical_model("video", logical or defaults.video_model)
         if route:
             return route.upstream_model
-        if logical == "seedance-2":
-            return (settings.model_video_2 or "").strip() or settings.model_video
-        return settings.model_video or (settings.model_video_2 or "").strip()
+        if logical in {"seedance-2", "seedance-2.0", "seedance-2-0"}:
+            from app.services.tokenfree_pricing import canonicalize_channel_model_id
+
+            return canonicalize_channel_model_id(
+                (settings.model_video_2 or "").strip() or settings.model_video
+            )
+        from app.services.tokenfree_pricing import canonicalize_channel_model_id
+
+        return canonicalize_channel_model_id(
+            settings.model_video or (settings.model_video_2 or "").strip()
+        )
     return raw

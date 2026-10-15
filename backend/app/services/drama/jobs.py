@@ -289,7 +289,66 @@ async def run_script_summary_job(project_id: int) -> dict[str, Any]:
             auto_title or project.title,
             (one_line[:40] + "…") if len(one_line) > 40 else one_line,
         )
-        return {"ok": True, "project_id": project_id}
+
+    # 顺序：整剧摘要 → 抽资产 → 入队分集剧本（分镜等分集完成后再跑）
+    assets_result: dict[str, Any]
+    try:
+        assets_result = await seed_assets_for_project(project_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("摘要后自动抽资产异常 project_id=%s", project_id)
+        assets_result = {"ok": False, "error": "seed_assets_failed"}
+
+    episodes_task_id: int | None = None
+    try:
+        async with AsyncSessionLocal() as db:
+            project = await db.get(
+                DramaProject,
+                project_id,
+                options=[selectinload(DramaProject.script)],
+            )
+            if not project or not project.script:
+                return {
+                    "ok": True,
+                    "project_id": project_id,
+                    "assets": assets_result,
+                    "error": "missing_project_after_summary",
+                }
+            user = await db.get(User, project.user_id)
+            if not user:
+                return {
+                    "ok": True,
+                    "project_id": project_id,
+                    "assets": assets_result,
+                    "error": "missing_user",
+                }
+            params = dict(project.script.params or {})
+            if str(params.get("episode_content_status") or "") != "generating":
+                params["episode_content_status"] = "generating"
+                params.pop("episode_content_error", None)
+                total = 1
+                if isinstance(project.script.summary, dict):
+                    total = int(project.script.summary.get("episodeCount") or 1)
+                params["episode_count"] = total
+                params["episode_content_progress"] = {"done": 0, "total": total}
+                project.script.params = params
+            episodes_task_id = await dispatch_episode_scripts_job(
+                db, user, project_id, force=False
+            )
+            await db.commit()
+            logger.info(
+                "摘要后已入队分集剧本 project_id=%s task_id=%s",
+                project_id,
+                episodes_task_id,
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("摘要后入队分集剧本失败 project_id=%s", project_id)
+
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "assets": assets_result,
+        "episode_script_task_id": episodes_task_id,
+    }
 
 
 # ---------- episode scripts ----------
@@ -531,6 +590,27 @@ async def run_episode_scripts_job(
                     phase="generating",
                     message=f"分集剧本进度 {done_now}/{total}",
                 )
+                # 本批刚写完的集：立刻补抽资产并入队 AI 分镜（不必等全集）
+                finished_numbers = sorted(
+                    {
+                        int(item.get("episodeNumber") or 0)
+                        for item in batch
+                        if isinstance(item, dict) and int(item.get("episodeNumber") or 0) >= 1
+                    }
+                )
+                for ep_no in finished_numbers:
+                    try:
+                        await kickoff_fragment_plans(
+                            project_id,
+                            episode_numbers=[ep_no],
+                            reseed_assets=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "单集剧本后自动分镜异常 project_id=%s episode=%s",
+                            project_id,
+                            ep_no,
+                        )
                 guard += 1
                 if guard > max(total * 2, 24):
                     raise RuntimeError(
@@ -548,7 +628,22 @@ async def run_episode_scripts_job(
             await db.commit()
             await _sync_task_progress(total, total, phase="succeeded", message=f"分集剧本全部完成 {total}/{total}")
             logger.info("分集剧本全部完成 project_id=%s total=%s", project_id, total)
-            return {"ok": True, "project_id": project_id, "total": total}
+            # 收尾：补抽遗漏资产，并为尚未入队分镜的集兜底入队
+            try:
+                pipeline = await kickoff_fragment_plans(
+                    project_id,
+                    episode_numbers=None,
+                    reseed_assets=True,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("全集收尾自动分镜异常 project_id=%s", project_id)
+                pipeline = {"ok": False, "error": "kickoff_failed"}
+            return {
+                "ok": True,
+                "project_id": project_id,
+                "total": total,
+                "post_pipeline": pipeline,
+            }
         except Exception as exc:  # noqa: BLE001
             params = dict(script.params or {})
             params["episode_content_status"] = "failed"
@@ -776,6 +871,21 @@ async def _run_single_episode_script_job(
                 mode,
                 assets_created,
             )
+            # 正文类模式：立刻抽资产（全量补齐）并入队本集 LLM 分镜
+            pipeline: dict[str, Any] | None = None
+            if mode in {"body", "full", "optimize"}:
+                try:
+                    pipeline = await kickoff_assets_and_fragment_plans(
+                        project_id,
+                        episode_numbers=[int(episode_number)],
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "单集剧本后自动抽资产/分镜异常 project_id=%s episode=%s",
+                        project_id,
+                        episode_number,
+                    )
+                    pipeline = {"ok": False, "error": "kickoff_failed"}
             return {
                 "ok": True,
                 "project_id": project_id,
@@ -783,6 +893,7 @@ async def _run_single_episode_script_job(
                 "generate_mode": mode,
                 "assets_created_count": assets_created,
                 "assets_reused_count": assets_reused,
+                "post_pipeline": pipeline,
             }
         except Exception as exc:  # noqa: BLE001
             params = dict(script.params or {})
@@ -1476,6 +1587,7 @@ async def poll_fragment_video_task(task_id: int) -> None:
                     project_id=ep.project.id,
                     shot_no=fragment_id,
                 )
+                payload = task.payload if isinstance(task.payload, dict) else {}
                 await apply_fragment_video_assets(
                     db,
                     user,
@@ -1487,6 +1599,7 @@ async def poll_fragment_video_task(task_id: int) -> None:
                     attempt_limit=attempt_limit,
                     task_result=result,
                     provider_task_id=task.provider_task_id,
+                    model_id=str(payload.get("model_id") or "") or None,
                 )
                 # apply 已 commit：行锁复查。下载期间用户可能已取消（status=cancel_requested），
                 # 此时不能走常规 complete，也不能放任 frozen 全额退款，按实际用量结算为 cancelled。
@@ -1823,6 +1936,352 @@ async def run_asset_video_job(
                 err_text,
             )
             return {"ok": False, "error": err_text}
+
+
+# ---------- 剧本完成后：抽资产 + 入队 LLM 分镜 ----------
+
+
+def _episode_has_protected_fragments(episode: DramaEpisode) -> bool:
+    """已有视频或手改分镜则视为受保护，自动分镜跳过。"""
+    for frag in episode.fragments or []:
+        if (frag.video or "").strip():
+            return True
+        params = frag.params if isinstance(frag.params, dict) else {}
+        if params.get("user_edited"):
+            return True
+    return False
+
+
+async def dispatch_episode_fragment_plan(
+    db: AsyncSession,
+    user: User,
+    episode: DramaEpisode,
+    *,
+    force: bool = True,
+    fallback_rules: bool = True,
+    commit: bool = True,
+) -> int | None:
+    """标记分集分镜中并入队 LLM 分镜任务；已在 generating 且非 force 时跳过。"""
+    params = dict(episode.params or {}) if isinstance(episode.params, dict) else {}
+    existing = str(params.get("fragment_plan_status") or "")
+    if existing == "generating" and not force:
+        logger.info("自动分镜跳过：已在进行中 episode_id=%s", episode.id)
+        return None
+
+    params["fragment_plan_status"] = "generating"
+    params.pop("fragment_plan_error", None)
+    params["fragment_plan_mode"] = "llm"
+    params["fragment_plan_auto"] = True
+    episode.params = params
+    await db.flush()
+
+    task_id = await _enqueue_drama_task(
+        db,
+        user,
+        task_type="fragment_plan",
+        project_id=int(episode.project_id),
+        episode_id=int(episode.id),
+        dedupe_suffix=f"episode:{int(episode.id)}:force:{int(bool(force))}:auto",
+        payload={
+            "project_id": int(episode.project_id),
+            "episode_id": int(episode.id),
+            "fallback_rules": bool(fallback_rules),
+            "force": bool(force),
+            "auto": True,
+        },
+        commit=commit,
+    )
+    logger.info(
+        "自动入队 LLM 分镜 episode_id=%s force=%s task_id=%s",
+        episode.id,
+        force,
+        task_id,
+    )
+    return task_id
+
+
+async def seed_assets_for_project(project_id: int) -> dict[str, Any]:
+    """从整剧摘要/已有分集正文抽取资产库（角色/场景/道具）。"""
+    from app.services.drama.seed import seed_assets_from_script
+
+    logger.info("自动抽取漫剧资产 project_id=%s", project_id)
+    async with AsyncSessionLocal() as db:
+        project = await db.get(
+            DramaProject,
+            project_id,
+            options=[selectinload(DramaProject.script)],
+        )
+        if not project or not project.script:
+            return {"ok": False, "error": "missing_project_or_script"}
+        user = await db.get(User, project.user_id)
+        if not user:
+            return {"ok": False, "error": "missing_user"}
+
+        params = dict(project.params or {}) if isinstance(project.params, dict) else {}
+        params["assets_seed_status"] = "generating"
+        params["assets_seed_generating_at"] = datetime.now(UTC).isoformat()
+        params.pop("assets_seed_error", None)
+        project.params = params
+        await db.commit()
+
+        try:
+            project = await db.get(
+                DramaProject,
+                project_id,
+                options=[selectinload(DramaProject.script)],
+            )
+            if not project:
+                return {"ok": False, "error": "project_not_found"}
+            seed_result = await seed_assets_from_script(db, project)
+            params = dict(project.params or {}) if isinstance(project.params, dict) else {}
+            params["assets_seed_status"] = "done"
+            params.pop("assets_seed_error", None)
+            params.pop("assets_seed_generating_at", None)
+            params["assets_seed_created"] = seed_result.created_count
+            params["assets_seed_refreshed"] = seed_result.prompts_refreshed
+            params["assets_seed_props_updated"] = seed_result.props_updated
+            if seed_result.llm_errors:
+                params["assets_seed_llm_errors"] = seed_result.llm_errors[:20]
+            else:
+                params.pop("assets_seed_llm_errors", None)
+            project.params = params
+            await record_seed_assets_llm_usage(db, user, project.id, seed_result)
+            await db.commit()
+            logger.info(
+                "自动抽资产完成 project_id=%s created=%s",
+                project_id,
+                seed_result.created_count,
+            )
+            return {
+                "ok": True,
+                "created_count": seed_result.created_count,
+                "prompts_refreshed": seed_result.prompts_refreshed,
+                "props_updated": seed_result.props_updated,
+            }
+        except Exception as exc:  # noqa: BLE001
+            project = await db.get(DramaProject, project_id)
+            if project:
+                params = dict(project.params or {}) if isinstance(project.params, dict) else {}
+                params["assets_seed_status"] = "failed"
+                params["assets_seed_error"] = str(exc)[:500]
+                params.pop("assets_seed_generating_at", None)
+                project.params = params
+                await db.commit()
+            logger.exception("自动抽资产失败 project_id=%s", project_id)
+            return {"ok": False, "error": str(exc)[:500]}
+
+
+def _episode_body_by_number(script: Any) -> dict[int, str]:
+    """剧本 episode_content → {集号: 正文}。"""
+    from app.services.drama.seed import _normalize_episode_list
+
+    out: dict[int, str] = {}
+    content = getattr(script, "episode_content", None) if script is not None else None
+    for item in _normalize_episode_list(content):
+        if not isinstance(item, dict):
+            continue
+        ep_no = int(item.get("episodeNumber") or 0)
+        if ep_no < 1:
+            continue
+        body = str(item.get("body") or item.get("content") or "").strip()
+        if body:
+            out[ep_no] = body
+    return out
+
+
+def _episode_plan_insufficient(episode: DramaEpisode, body: str) -> bool:
+    """已完成但镜数明显不够（如长正文只 1 镜）→ 需要强制重跑 AI/规则分镜。"""
+    from app.services.drama.fragment_plan import llm_fragment_coverage_insufficient
+
+    frags = list(episode.fragments or [])
+    drafts = [
+        {
+            "content": f.content or "",
+            "duration_sec": int(f.duration_sec or 0),
+        }
+        for f in frags
+    ]
+    return llm_fragment_coverage_insufficient(body, drafts)
+
+
+async def kickoff_fragment_plans(
+    project_id: int,
+    *,
+    episode_numbers: list[int] | None = None,
+    reseed_assets: bool = True,
+) -> dict[str, Any]:
+    """
+    分集剧本就绪后：可选补抽场景/道具 → 建分集行 → 入队 LLM 分镜。
+    流水线顺序应为：整剧摘要 → 抽资产 → 分集剧本 → 本函数。
+    已完成但镜数过少（如仅 1 镜）的集会强制重跑；进行中的不 seed 覆盖。
+    """
+    from app.services.drama.seed import seed_single_episode_from_script
+
+    logger.info(
+        "分集后自动分镜 project_id=%s episode_numbers=%s reseed=%s",
+        project_id,
+        episode_numbers,
+        reseed_assets,
+    )
+    assets_created = 0
+    if reseed_assets:
+        assets_result = await seed_assets_for_project(project_id)
+        assets_created = int(assets_result.get("created_count") or 0)
+
+    async with AsyncSessionLocal() as db:
+        project = await db.get(
+            DramaProject,
+            project_id,
+            options=[selectinload(DramaProject.script)],
+        )
+        if not project or not project.script:
+            return {"ok": False, "error": "missing_project_or_script"}
+
+        user = await db.get(User, project.user_id)
+        if not user:
+            return {"ok": False, "error": "missing_user"}
+
+        body_by_number = _episode_body_by_number(project.script)
+        target_numbers = [int(n) for n in (episode_numbers or []) if int(n) >= 1]
+        if not target_numbers:
+            target_numbers = sorted(body_by_number.keys())
+
+        episodes_result = await db.execute(
+            select(DramaEpisode)
+            .where(DramaEpisode.project_id == project_id)
+            .options(selectinload(DramaEpisode.fragments))
+            .order_by(DramaEpisode.id.asc())
+        )
+        episodes = list(episodes_result.scalars().all())
+        by_number: dict[int, DramaEpisode] = {}
+        for ep in episodes:
+            ep_params = ep.params if isinstance(ep.params, dict) else {}
+            ep_no = int(ep_params.get("episodeNumber") or 0)
+            if ep_no >= 1 and ep_no not in by_number:
+                by_number[ep_no] = ep
+
+        # 仅给「需要分镜」的集建行；已 generating/合格 completed 绝不规则 seed 覆盖
+        need_queue: list[DramaEpisode] = []
+        skipped: list[int] = []
+        for ep_no in target_numbers:
+            body = body_by_number.get(ep_no) or ""
+            if not body:
+                continue
+            episode = by_number.get(ep_no)
+            if episode is None:
+                try:
+                    episode = await seed_single_episode_from_script(db, project, ep_no)
+                    by_number[ep_no] = episode
+                except ValueError as exc:
+                    logger.warning(
+                        "自动建分集跳过 project_id=%s ep=%s err=%s",
+                        project_id,
+                        ep_no,
+                        exc,
+                    )
+                    continue
+            if _episode_has_protected_fragments(episode):
+                skipped.append(int(episode.id))
+                continue
+            ep_params = episode.params if isinstance(episode.params, dict) else {}
+            plan_st = str(ep_params.get("fragment_plan_status") or "")
+            if plan_st == "generating":
+                skipped.append(int(episode.id))
+                continue
+            if plan_st == "completed" and not _episode_plan_insufficient(episode, body):
+                skipped.append(int(episode.id))
+                continue
+            if plan_st == "completed" and _episode_plan_insufficient(episode, body):
+                logger.warning(
+                    "分镜镜数不足将重跑 project_id=%s episode_id=%s ep=%s frags=%s",
+                    project_id,
+                    episode.id,
+                    ep_no,
+                    len(episode.fragments or []),
+                )
+            need_queue.append(episode)
+
+        # 顺带修复本剧其它「已完成但仅 1 镜」的异常集（不必等全集收尾）
+        queued_ids = {int(ep.id) for ep in need_queue}
+        for ep_no, episode in by_number.items():
+            if int(episode.id) in queued_ids:
+                continue
+            if _episode_has_protected_fragments(episode):
+                continue
+            ep_params = episode.params if isinstance(episode.params, dict) else {}
+            if str(ep_params.get("fragment_plan_status") or "") != "completed":
+                continue
+            body = body_by_number.get(ep_no) or ""
+            if body and _episode_plan_insufficient(episode, body):
+                logger.warning(
+                    "顺带重跑镜数不足分集 project_id=%s episode_id=%s ep=%s frags=%s",
+                    project_id,
+                    episode.id,
+                    ep_no,
+                    len(episode.fragments or []),
+                )
+                need_queue.append(episode)
+                queued_ids.add(int(episode.id))
+
+        queued: list[int] = []
+        for episode in need_queue:
+            ep_params = dict(episode.params or {}) if isinstance(episode.params, dict) else {}
+            ep_params["fragment_plan_status"] = "generating"
+            ep_params.pop("fragment_plan_error", None)
+            ep_params["fragment_plan_mode"] = "llm"
+            ep_params["fragment_plan_auto"] = True
+            episode.params = ep_params
+        await db.commit()
+
+        for episode in need_queue:
+            try:
+                task_id = await dispatch_episode_fragment_plan(
+                    db,
+                    user,
+                    episode,
+                    force=True,
+                    fallback_rules=True,
+                    commit=False,
+                )
+                if task_id:
+                    queued.append(int(episode.id))
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "自动入队分镜失败 project_id=%s episode_id=%s",
+                    project_id,
+                    episode.id,
+                )
+                ep_params = dict(episode.params or {}) if isinstance(episode.params, dict) else {}
+                ep_params["fragment_plan_status"] = "failed"
+                ep_params["fragment_plan_error"] = "自动分镜入队失败"
+                episode.params = ep_params
+        await db.commit()
+        logger.info(
+            "分集后自动分镜完成 project_id=%s assets_created=%s queued=%s skipped=%s",
+            project_id,
+            assets_created,
+            queued,
+            skipped,
+        )
+        return {
+            "ok": True,
+            "assets_created": assets_created,
+            "queued_episode_ids": queued,
+            "skipped_episode_ids": skipped,
+        }
+
+
+async def kickoff_assets_and_fragment_plans(
+    project_id: int,
+    *,
+    episode_numbers: list[int] | None = None,
+) -> dict[str, Any]:
+    """兼容旧名：分集后补抽资产并入队分镜。"""
+    return await kickoff_fragment_plans(
+        project_id,
+        episode_numbers=episode_numbers,
+        reseed_assets=True,
+    )
 
 
 # ---------- seed assets from script ----------

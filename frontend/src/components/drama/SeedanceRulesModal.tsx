@@ -225,7 +225,7 @@ export function SeedanceRulesModal({ open, onClose }: Props) {
             <ul className="seedance-rules-list">
               <li>资产库 / 分集 / 画布可为角色绑定试听；本镜开口时提交为 reference_audio</li>
               <li>未绑定音色时，口播由 Seedance generate_audio 自行发挥</li>
-              <li>缺少参考图时，系统会尝试自动补图后再提交 Seedance</li>
+              <li>关联角色/场景/道具须先有参考图（生成或上传），否则不能生成视频</li>
             </ul>
 
             <h4>AI 重新分镜</h4>

@@ -34,3 +34,24 @@ def test_format_seedance_audio_duration_without_labels():
     msg = _format_seedance_create_error(400, body, content_labels=None)
     assert "参考音频过短" in msg
     assert "content[3]" in msg
+
+
+def test_format_seedance_output_duration_invalid_for_2_0():
+    body = (
+        '{"code":"fail_to_fetch_task","message":"{\\"error\\":{\\"code\\":\\"InvalidParameter\\",'
+        '\\"message\\":\\"the parameter duration specified in the request is not valid for model '
+        'doubao-seedance-2-0 in r2v\\"}}"}'
+    )
+    msg = _format_seedance_create_error(400, body)
+    assert "4–15" in msg
+    assert "15 秒" in msg
+
+
+def test_format_seedance_model_not_found_2_5():
+    body = (
+        '{"error":{"code":"model_not_found","message":'
+        '"分组 default 下模型 seedance-2.5 无可用渠道（distributor）","type":"new_api_error"}}'
+    )
+    msg = _format_seedance_create_error(503, body)
+    assert "未开通" in msg
+    assert "2.0" in msg

@@ -13,6 +13,7 @@ from app.models import Project
 from app.models_tasks import TaskRun
 from app.services.billing.pricing import charge_fen_for_tokens
 from app.services.tokenfree_pricing import (
+    canonicalize_channel_model_id,
     charge_fen_official_image,
     charge_fen_official_llm,
     charge_fen_official_video,
@@ -48,6 +49,24 @@ def _drama_video_resolution(payload: dict) -> str:
     prepared = payload.get("prepared") if isinstance(payload.get("prepared"), dict) else {}
     raw = str((prepared or {}).get("resolution") or payload.get("resolution") or "").strip()
     return raw or "720p"
+
+
+def _payload_video_model(payload: dict, settings: Settings) -> str:
+    """从任务 payload 取实际视频模型（含 prepared.seedance_body），避免按站点默认 2.0 低估 2.5。"""
+    prepared = payload.get("prepared") if isinstance(payload.get("prepared"), dict) else {}
+    body = prepared.get("seedance_body") if isinstance(prepared.get("seedance_body"), dict) else {}
+    for val in (
+        payload.get("model_id"),
+        payload.get("model"),
+        body.get("model"),
+        prepared.get("model_id"),
+        prepared.get("model"),
+    ):
+        text = str(val or "").strip()
+        if text:
+            return canonicalize_channel_model_id(text) or text
+    fallback = str(getattr(settings, "model_video", "") or "").strip()
+    return canonicalize_channel_model_id(fallback) or fallback or "seedance-2.5"
 
 
 _VIDEO_SIZE_LABELS = {"480p", "720p", "1080p"}
@@ -125,10 +144,14 @@ def _estimate_videos_fen(project: Project, settings: Settings) -> int:
     if not shots:
         return 1
     total = 0
+    mid = _payload_video_model({}, settings)
     for sh in shots:
         secs = max(float(sh.duration or 4), 2.0)
         total += charge_fen_official_video(
-            secs, settings, resolution=_kepu_video_resolution(project, settings)
+            secs,
+            settings,
+            model=mid,
+            resolution=_kepu_video_resolution(project, settings),
         )
     return _buffered_fen(total, settings)
 
@@ -185,7 +208,10 @@ async def estimate_task_fen(db: AsyncSession, task: TaskRun, settings: Settings 
             project_id = task.project_id or payload.get("project_id")
             project = await db.get(Project, int(project_id)) if project_id else None
             c = charge_fen_official_video(
-                max(dur, 2.0), s, resolution=_kepu_video_resolution(project, s)
+                max(dur, 2.0),
+                s,
+                model=_payload_video_model(payload, s),
+                resolution=_kepu_video_resolution(project, s),
             )
             return _buffered_fen(c, s)
         if task_type in {"shot_regen_audio", "project_regen_audio"}:
@@ -234,7 +260,10 @@ async def estimate_task_fen(db: AsyncSession, task: TaskRun, settings: Settings 
             if dur <= 0:
                 dur = 8.0
             c = charge_fen_official_video(
-                max(dur, 2.0), s, resolution=_drama_video_resolution(payload)
+                max(dur, 2.0),
+                s,
+                model=_payload_video_model(payload, s),
+                resolution=_drama_video_resolution(payload),
             )
             c = _buffered_fen(c, s)
             if task_type == "fragment_video":
@@ -259,6 +288,7 @@ async def estimate_task_fen(db: AsyncSession, task: TaskRun, settings: Settings 
             c = charge_fen_official_video(
                 max(dur, 2.0),
                 s,
+                model=_payload_video_model(payload, s),
                 resolution=str(payload.get("resolution") or "").strip() or "480p",
             )
             return _buffered_fen(c, s)

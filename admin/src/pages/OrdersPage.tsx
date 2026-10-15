@@ -69,6 +69,7 @@ export function OrdersPage() {
   const [usageDomain, setUsageDomain] = useState("");
   const [usageBillingKey, setUsageBillingKey] = useState("");
   const [usageCapability, setUsageCapability] = useState("");
+  const [usageModel, setUsageModel] = useState("");
   const [usageBasis, setUsageBasis] = useState("");
   const [usageDateFrom, setUsageDateFrom] = useState("");
   const [usageDateTo, setUsageDateTo] = useState("");
@@ -103,7 +104,7 @@ export function OrdersPage() {
 
   async function loadUsage(
     page = usagePage,
-    overrides?: { billing_key?: string; capability?: string },
+    overrides?: { billing_key?: string; capability?: string; model?: string },
   ) {
     try {
       const params = new URLSearchParams({ page: String(page), page_size: String(DEFAULT_PAGE_SIZE) });
@@ -112,11 +113,14 @@ export function OrdersPage() {
       if (usageDomain) params.set("domain", usageDomain);
       const billingKey = overrides?.billing_key ?? usageBillingKey.trim();
       const capability = overrides?.capability ?? usageCapability.trim();
+      const model = overrides?.model ?? usageModel.trim();
       if (billingKey) params.set("billing_key", billingKey);
       if (capability) params.set("capability", capability);
+      if (model) params.set("model", model);
       if (usageBasis) params.set("billing_basis", usageBasis);
-      if (usageDateFrom) params.set("created_from", `${usageDateFrom}T00:00:00`);
-      if (usageDateTo) params.set("created_to", `${usageDateTo}T23:59:59`);
+      // 按东八区日历日筛选，避免 naive 时间被当成 UTC 漏掉上午用量
+      if (usageDateFrom) params.set("created_from", `${usageDateFrom}T00:00:00+08:00`);
+      if (usageDateTo) params.set("created_to", `${usageDateTo}T23:59:59+08:00`);
       setUsage(await api<AdminUsageEventListRes>(`/api/admin/usage-events?${params}`));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "加载用量失败");
@@ -374,6 +378,11 @@ export function OrdersPage() {
               <option value="video">视频</option>
               <option value="tts">配音</option>
             </Select>
+            <Input
+              placeholder="模型（如 seedance-2.5）"
+              value={usageModel}
+              onChange={(e) => setUsageModel(e.target.value)}
+            />
             <Select value={usageBasis} onChange={(e) => setUsageBasis(e.target.value)}>
               <option value="">全部计费依据</option>
               <option value="estimate">估算</option>
@@ -396,11 +405,26 @@ export function OrdersPage() {
               onClick={() => {
                 setUsageBillingKey("llm_chat");
                 setUsageCapability("llm");
+                setUsageModel("");
                 setUsagePage(1);
-                void loadUsage(1, { billing_key: "llm_chat", capability: "llm" });
+                void loadUsage(1, { billing_key: "llm_chat", capability: "llm", model: "" });
               }}
             >
               LLM 用量
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="admin-filter-action"
+              onClick={() => {
+                setUsageBillingKey("");
+                setUsageCapability("video");
+                setUsageModel("seedance-2.5");
+                setUsagePage(1);
+                void loadUsage(1, { billing_key: "", capability: "video", model: "seedance-2.5" });
+              }}
+            >
+              Seedance 2.5
             </Button>
             <Button
               size="sm"

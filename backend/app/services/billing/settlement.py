@@ -293,13 +293,29 @@ async def settle_task(db: AsyncSession, task_id: int) -> dict[str, int]:
         return {"charged": charged, "refunded": 0}
 
     user = await _lock_user(db, int(task.requested_by)) if task.requested_by else None
-    if not user or task.billing_status != "frozen":
-        # 非 frozen（如 none）但已有用量：只落账用量，不碰钱包
+    if not user:
         task.billing_charged_fen = charged
         if events:
             task.billing_status = "settled"
         await db.flush()
-        if charged > 0 and user:
+        return {"charged": charged, "refunded": 0}
+    if task.billing_status != "frozen":
+        # 非 frozen（none/settled 重入外）但有用量：按实扣直接扣钱包，避免只记账漏扣
+        if charged > 0 and billing_active(user):
+            await _ledger(
+                db,
+                user,
+                -charged,
+                "settle",
+                ref_type="task_run",
+                ref_id=str(task_id),
+                note="settle_direct",
+            )
+        task.billing_charged_fen = charged
+        if events or charged > 0:
+            task.billing_status = "settled"
+        await db.flush()
+        if charged > 0:
             from app.services.billing.alerts import process_billing_alerts_after_charge
 
             await process_billing_alerts_after_charge(db, user, charged_fen=charged)

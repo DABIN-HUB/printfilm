@@ -106,6 +106,7 @@ class AdminModelSettingsOut(BaseModel):
     billing_seedream_per_m: float = 8.0
     billing_tts_per_m: float = 2.0
     billing_kie_fen_per_credit: float = 3.5
+    billing_usd_cny: float = 7.3
     billing_est_llm_tokens: int = 80_000
     billing_est_seedream_tokens: int = 45_000
     billing_est_tts_tokens: int = 5_000
@@ -227,6 +228,7 @@ class AdminModelSettingsPatch(BaseModel):
     billing_seedream_per_m: float | None = None
     billing_tts_per_m: float | None = None
     billing_kie_fen_per_credit: float | None = None
+    billing_usd_cny: float | None = None
     billing_est_llm_tokens: int | None = None
     billing_est_seedream_tokens: int | None = None
     billing_est_tts_tokens: int | None = None
@@ -339,6 +341,7 @@ def model_config_field_names() -> tuple[str, ...]:
         "billing_seedream_per_m",
         "billing_tts_per_m",
         "billing_kie_fen_per_credit",
+        "billing_usd_cny",
         "billing_est_llm_tokens",
         "billing_est_seedream_tokens",
         "billing_est_tts_tokens",

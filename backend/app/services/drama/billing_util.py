@@ -17,11 +17,18 @@ if TYPE_CHECKING:
     from app.services.ark import ImageResult, TaskResult
 
 
-# 按分镜时长估算 Seedance 视频 token（与科普 pipeline 一致）
-def seedance_video_billing_tokens(duration_sec: int | float | None) -> int:
-    settings = get_settings()
-    dur = max(float(duration_sec or 8), 2.0)
-    return int(dur * settings.billing_est_seedance_tokens_per_sec)
+# 按分镜时长×清晰度估算 Seedance 视频 token（1080p≈5 万/秒，与计价一致）
+def seedance_video_billing_tokens(
+    duration_sec: int | float | None,
+    resolution: str = "",
+) -> int:
+    from app.services.tokenfree_pricing import estimate_seedance_billing_tokens
+
+    return estimate_seedance_billing_tokens(
+        max(float(duration_sec or 8), 2.0),
+        resolution=resolution,
+        settings=get_settings(),
+    )
 
 
 def seedance_billing_key(*, generate_audio: bool = True) -> str:
@@ -33,14 +40,19 @@ def _stamp_video_billing_facts(
     *,
     seconds: float | None,
     resolution: str,
+    tokens: int | None = None,
 ) -> dict[str, Any] | None:
-    """把时长和清晰度写进 usage，供 TokenFree 秒价表达式结算。"""
+    """把时长/清晰度/tokens 写进 usage，供 TokenFree 表达式结算。"""
     try:
         secs = float(seconds) if seconds is not None else 0.0
     except (TypeError, ValueError):
         secs = 0.0
     res = (resolution or "").strip().lower()
-    if secs <= 0 and not res:
+    try:
+        tok = int(tokens or 0)
+    except (TypeError, ValueError):
+        tok = 0
+    if secs <= 0 and not res and tok <= 0:
         return raw
     body = dict(raw or {})
     usage = dict(body.get("usage") or {}) if isinstance(body.get("usage"), dict) else {}
@@ -48,6 +60,8 @@ def _stamp_video_billing_facts(
         usage.setdefault("seconds", secs)
     if res:
         usage.setdefault("resolution", res)
+    if tok > 0:
+        usage.setdefault("tokens", tok)
     usage.setdefault("input_video_seconds", float(usage.get("input_video_seconds") or 0))
     body["usage"] = usage
     return body
@@ -81,6 +95,10 @@ async def record_seedance_video_usage(
 
     幂等：同 task_run+billing_key，或同 provider_task_id 已有行时直接返回，避免并发收尾双记。
     """
+    from app.services.tokenfree_pricing import canonicalize_channel_model_id
+
+    # 落库 id 规范到 TokenFree 目录（seedance-2-5 → seedance-2.5），避免按错误档位计价
+    model = canonicalize_channel_model_id((model or "").strip()) or (model or "").strip() or "seedance-2.5"
     tid = get_current_task_run_id()
     provider_id = (provider_task_id or "").strip()
 
@@ -134,28 +152,55 @@ async def record_seedance_video_usage(
     completion_tokens = int(getattr(task_result, "completion_tokens", 0) or 0)
     raw_usage = getattr(task_result, "raw_usage", None)
     upstream_from_result = getattr(task_result, "upstream_cost_fen", None)
+    # TaskResult.raw_usage 可能是整包 {usage:{...}} 或已是 usage 块
     raw: dict[str, Any] | None = None
-    if raw_usage:
-        raw = dict(raw_usage) if isinstance(raw_usage, dict) else {"usage": dict(raw_usage)}
-        # 统一把计费字段放进 usage，便于 charge_fen_for_usage / display
+    if isinstance(raw_usage, dict):
+        raw = dict(raw_usage)
         usage_block = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
-        merged_usage = {**usage_block}
+        merged_usage = dict(usage_block) if usage_block else {}
+        if not merged_usage and any(k in raw for k in ("total_tokens", "completion_tokens", "tokens", "quota")):
+            for key in (
+                "total_tokens",
+                "completion_tokens",
+                "tokens",
+                "prompt_tokens",
+                "quota",
+                "quota_consumed",
+                "consumed_quota",
+                "cost_fen",
+            ):
+                if raw.get(key) is not None:
+                    merged_usage[key] = raw.get(key)
         if "creditsConsumed" in raw and "creditsConsumed" not in merged_usage:
             merged_usage["creditsConsumed"] = raw.get("creditsConsumed")
         if upstream_from_result is not None:
             merged_usage["cost_fen"] = int(upstream_from_result)
         elif raw.get("cost_fen") is not None:
             merged_usage["cost_fen"] = int(raw["cost_fen"])
+        if total_tokens > 0:
+            merged_usage.setdefault("total_tokens", total_tokens)
+            merged_usage.setdefault("tokens", total_tokens)
+        if completion_tokens > 0:
+            merged_usage.setdefault("completion_tokens", completion_tokens)
         if merged_usage:
             raw["usage"] = merged_usage
     elif provider_id:
         raw = {"usage": {}}
     if provider_id:
         raw = {**(raw or {}), "provider_task_id": provider_id}
+
+    fallback_tokens = 0
+    if fallback_duration_sec is not None:
+        fallback_tokens = seedance_video_billing_tokens(
+            fallback_duration_sec, resolution=resolution
+        )
+    # 无上游 token 时把时长估算 token 写入 usage，避免表达式按秒价表低估
+    stamp_tokens = total_tokens or fallback_tokens or None
     raw = _stamp_video_billing_facts(
         raw,
         seconds=fallback_duration_sec,
         resolution=resolution,
+        tokens=stamp_tokens,
     )
 
     from app.services.billing.pricing import parse_upstream_cost_fen
@@ -182,7 +227,7 @@ async def record_seedance_video_usage(
             user_id=user_id,
             billing_key=billing_key,
             model=model,
-            tokens=total_tokens,
+            tokens=total_tokens or fallback_tokens,
             completion_tokens=completion_tokens,
             estimated=False,
             raw=raw,
@@ -192,10 +237,6 @@ async def record_seedance_video_usage(
             domain=domain,
             provider=provider,
         )
-
-    fallback_tokens = 0
-    if fallback_duration_sec is not None:
-        fallback_tokens = seedance_video_billing_tokens(fallback_duration_sec)
 
     return await record_line(
         db,

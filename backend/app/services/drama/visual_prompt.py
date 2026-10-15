@@ -13,6 +13,7 @@ from app.services.billing import record_llm_chat_line
 from app.services.drama.llm import drama_chat_text
 from app.services.llm_client import LlmUnavailableError
 from app.services.drama.seed import _episode_bodies
+from app.services.drama.generation_prompt import ensure_structure_in_prompt
 from app.services.drama.seed_asset_params import (
     build_scene_params,
     compose_character_visual_text,
@@ -257,13 +258,13 @@ def fallback_scene_visual_prompt(
     return normalize_visual_prompt_text(base)
 
 
-# 清洗 LLM 输出
+# 清洗 LLM 输出（含设定板前缀后正文可更长）
 def normalize_visual_prompt_text(raw: str) -> str:
     text = (raw or "").strip()
     text = re.sub(r"^[\"'「『]|[\"'」』]$", "", text).strip()
     text = re.sub(r"^(视觉形象描述|环境描述|道具描述)[:：]\s*", "", text)
     text = re.sub(r"\s+", " ", text)
-    return text[:680]
+    return text[:1600]
 
 
 # 合并规则稿与 LLM 稿，避免过短
@@ -300,6 +301,11 @@ async def _llm_visual_prompt(
     return prompt if len(prompt) >= min_len else ""
 
 
+def _finalize_visual_prompt(prompt: str, kind: str) -> str:
+    """解析结果写入提示词框前：挂上三视图等结构前缀（不再由提交链路静默携带）。"""
+    return ensure_structure_in_prompt(normalize_visual_prompt_text(prompt), kind)
+
+
 async def resolve_visual_prompt_for_asset(
     asset: DramaAsset,
     project: DramaProject,
@@ -312,6 +318,7 @@ async def resolve_visual_prompt_for_asset(
     """解析资产生图用的用户描述（过短/模板化则规则 + LLM 补全）。
 
     本次请求显式传入的 prompt 优先；禁止被资产里旧 visualPrompt 静默覆盖。
+    三视图等结构要求写入返回正文，供前端提示词框展示与编辑。
     """
     kind = (asset.type or "character").lower()
     name = asset.name or ""
@@ -327,16 +334,16 @@ async def resolve_visual_prompt_for_asset(
     # 用户这次点了「生成」并带了文案：以本次为准（够长直接用；偏短再补全）
     if incoming:
         if not is_weak_visual_prompt(incoming, name, kind):
-            return incoming
+            return _finalize_visual_prompt(incoming, kind)
         # 未达角色 120 字门槛、但仍有实质描述时直接采用，避免被旧 visualPrompt 锁死
         if len(incoming) >= 40 and incoming.lower() not in {
             name.lower(),
             f"{kind} {name}".lower(),
         }:
-            return incoming
+            return _finalize_visual_prompt(incoming, kind)
         seed = incoming
     elif not force_refresh and stored and not is_weak_visual_prompt(stored, name, kind):
-        return stored
+        return _finalize_visual_prompt(stored, kind)
     else:
         seed = stored
 
@@ -364,7 +371,7 @@ async def resolve_visual_prompt_for_asset(
             )
             prompt = merge_visual_prompts(rule_prompt, llm, min_len=min_len)
             if len(prompt) >= min_len or len(prompt) >= 80:
-                return prompt
+                return _finalize_visual_prompt(prompt, kind)
             if strict_llm:
                 raise RuntimeError(f"角色「{name}」AI 提示词过短（{len(prompt)} 字）")
         except LlmUnavailableError:
@@ -373,7 +380,7 @@ async def resolve_visual_prompt_for_asset(
             if strict_llm:
                 raise RuntimeError(f"角色「{name}」AI 提示词生成失败") from exc
             logger.exception("角色视觉提示词 LLM 失败 asset_id=%s", asset.id)
-        return seed or rule_prompt
+        return _finalize_visual_prompt(seed or rule_prompt, kind)
 
     if kind == "scene":
         rule_prompt = fallback_scene_visual_prompt(asset, summary, bodies)
@@ -400,7 +407,7 @@ async def resolve_visual_prompt_for_asset(
             llm = await _llm_visual_prompt(SCENE_VISUAL_SYSTEM, user_msg, min_len=80, **llm_bill)
             prompt = merge_visual_prompts(rule_prompt, llm, min_len=min_len)
             if len(prompt) >= min_len or len(prompt) >= 80:
-                return prompt
+                return _finalize_visual_prompt(prompt, kind)
             if strict_llm:
                 raise RuntimeError(f"场景「{name}」AI 提示词过短（{len(prompt)} 字）")
         except LlmUnavailableError:
@@ -409,7 +416,7 @@ async def resolve_visual_prompt_for_asset(
             if strict_llm:
                 raise RuntimeError(f"场景「{name}」AI 提示词生成失败") from exc
             logger.exception("场景视觉提示词 LLM 失败 asset_id=%s", asset.id)
-        return seed or rule_prompt
+        return _finalize_visual_prompt(seed or rule_prompt, kind)
 
     if kind in {"prop", "material", "none"}:
         rule_prompt = seed or normalize_visual_prompt_text(
@@ -430,7 +437,7 @@ async def resolve_visual_prompt_for_asset(
             llm = await _llm_visual_prompt(system, ctx, min_len=60, **llm_bill)
             prompt = merge_visual_prompts(rule_prompt, llm, min_len=min_len)
             if len(prompt) >= 60:
-                return prompt
+                return _finalize_visual_prompt(prompt, kind)
             if strict_llm:
                 raise RuntimeError(f"「{name}」AI 提示词过短（{len(prompt)} 字）")
         except LlmUnavailableError:
@@ -439,7 +446,7 @@ async def resolve_visual_prompt_for_asset(
             if strict_llm:
                 raise RuntimeError(f"「{name}」AI 提示词生成失败") from exc
             logger.exception("%s 视觉提示词 LLM 失败 asset_id=%s", kind, asset.id)
-        return rule_prompt
+        return _finalize_visual_prompt(rule_prompt, kind)
 
     # 自由画布 image 等：短提示必须钉住用户主体，禁止回落旧 visualPrompt / 静物套话
     if kind == "image" or kind not in {"character", "scene", "prop", "material", "none"}:
@@ -452,22 +459,23 @@ async def resolve_visual_prompt_for_asset(
                     **llm_bill,
                 )
                 if llm and _seed_tokens_preserved(seed, llm):
-                    return llm
+                    return _finalize_visual_prompt(llm, kind)
             except LlmUnavailableError:
                 raise
             except Exception:
                 logger.exception("自由图片视觉提示词 LLM 失败 asset_id=%s", asset.id)
                 if strict_llm:
                     raise
-            return _anchor_short_image_prompt(seed, name)
+            return _finalize_visual_prompt(_anchor_short_image_prompt(seed, name), kind)
         if stored and not is_weak_visual_prompt(stored, name, kind):
-            return stored
-        return normalize_visual_prompt_text(
-            f"{name or '画面'}，主体明确，构图完整，细节清晰。"
+            return _finalize_visual_prompt(stored, kind)
+        return _finalize_visual_prompt(
+            f"{name or '画面'}，主体明确，构图完整，细节清晰。",
+            kind,
         )
 
     if seed and len(seed) >= min_len:
-        return seed
+        return _finalize_visual_prompt(seed, kind)
     if stored and len(stored) >= min_len:
-        return stored
-    return normalize_visual_prompt_text(f"{name}，影视级静物/空镜，材质与氛围清晰，构图简洁。")
+        return _finalize_visual_prompt(stored, kind)
+    return _finalize_visual_prompt(normalize_visual_prompt_text(f"{name}，影视级静物/空镜，材质与氛围清晰，构图简洁。"), kind)

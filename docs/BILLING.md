@@ -41,6 +41,29 @@ cost_fen = ceil(quota / 500000 × BILLING_USD_CNY × 100)   # 500000 quota = 1 U
 charge_fen = cost_fen
 ```
 
+`BILLING_USD_CNY` 默认 **7.3**，与 TokenFree 控制台一致。价目 `billing_expr` 里常见系数已含 `/7.3` 折美元，本站兑回人民币必须用同一汇率，否则会系统性少扣约 4%。
+
+### Seedance（对齐 TokenFree Ark 渠道导出）
+
+渠道公式（2026-10-15）：
+
+```
+billing_expr USD sell = official_CNY / 7.3 * 1.5
+本站人民币 = official_CNY × 1.5
+```
+
+火山刊例（元/百万 tokens，写入 `billing_expr` 的分子）：
+
+| 模型 | 480p/720p 无视频 | 1080p 无视频 | 含视频输入 |
+|------|------------------|--------------|------------|
+| seedance-2.5 | 70 | 77 | 42 / 46（1080p） |
+| seedance-2.0 | 46 | 51 | 28 / 31（1080p） |
+| seedance-2.0-fast | 37 | — | 22 |
+
+无上游 `tokens` 时按输出像素估：`tok/s ≈ W×H×24/1024`（480p≈1万、720p≈2.2万、1080p≈4.9万）。本站将 TF 导出的完整 `billing_expr` 固化进 `tokenfree_pricing.SEEDANCE_TF_BILLING_EXPR`，启动拉价后强制覆盖 Seedance 三条，避免公开 `/api/pricing` 漂移。`seedance-2.0-mimi`（笔误）与 mini 一并规范到 `seedance-2.0`。
+
+对照：5s · 1080p · 2.5 · 无视频 ≈ 24.5 万 tok × 77 × 1.5 / 1e6 ≈ **¥28.3**（预扣再 ×`billing_estimate_buffer`）。
+
 未返回 quota 时，结算前再查 New API 消费日志 `GET /api/log/self`（type=2）。能按模型、token 或上游任务号唯一对上的，用该条 `quota` 实扣（已含分组倍率）。对不上则按公开价目 `GET /api/pricing` 核实后的规则报价，分组倍率按 1：
 
 - `billing_mode=tiered_expr`：任务表达式（含 `u("seconds")` 等）结果就是美元；token 表达式系数是美元/百万 tokens

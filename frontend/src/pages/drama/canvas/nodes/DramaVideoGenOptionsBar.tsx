@@ -44,8 +44,15 @@ export function DramaVideoGenOptionsBar({
 }: DramaVideoGenOptionsBarProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState<OpenPanel>(null)
+  // 自定义时长草稿：输入过程不立刻 clamp，避免打「24」时中间的「2」被夹成 min
+  const [durationDraft, setDurationDraft] = useState<string | null>(null)
+  const durationDraftRef = useRef<string | null>(null)
   const catalog = useMediaModelsCatalog()
   const videoModels = catalogVideoModels(catalog)
+
+  useEffect(() => {
+    durationDraftRef.current = durationDraft
+  }, [durationDraft])
 
   useEffect(() => {
     // 目录到达后，把旧 Kie/方舟 id 换成后台默认视频模型
@@ -103,17 +110,35 @@ export function DramaVideoGenOptionsBar({
     (sec) => sec >= durationBounds.min && sec <= durationBounds.max,
   )
 
+  /** 把草稿提交为夹紧后的 duration_sec */
+  function commitDurationDraft(raw: string | null = durationDraftRef.current) {
+    if (raw == null) return
+    const text = raw.trim()
+    const parsed = text === '' ? Number.NaN : Number(text)
+    const next = clampVideoDuration(
+      Number.isFinite(parsed) ? parsed : value.duration_sec,
+      value.model_id,
+      catalog,
+      videoModels,
+    )
+    if (next !== value.duration_sec) {
+      onChange({ ...value, duration_sec: next })
+    }
+    setDurationDraft(null)
+  }
+
   useEffect(() => {
     if (!open) return
     function onDoc(e: Event) {
       const target = e.target as Node | null
       if (rootRef.current && target && !rootRef.current.contains(target)) {
+        commitDurationDraft()
         setOpen(null)
       }
     }
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
-  }, [open])
+  }, [open, value, catalog, videoModels])
 
   const stop = (e: MouseEvent) => {
     e.stopPropagation()
@@ -251,21 +276,27 @@ export function DramaVideoGenOptionsBar({
             自定义（{durationBounds.min}–{durationBounds.max}s）
             <input
               type="number"
+              inputMode="numeric"
               min={durationBounds.min}
               max={durationBounds.max}
-              value={value.duration_sec}
+              step={1}
+              value={durationDraft ?? String(value.duration_sec)}
               disabled={disabled}
-              onChange={(e) =>
-                onChange({
-                  ...value,
-                  duration_sec: clampVideoDuration(
-                    Number(e.target.value),
-                    value.model_id,
-                    catalog,
-                    videoModels,
-                  ),
-                })
-              }
+              onFocus={() => setDurationDraft(String(value.duration_sec))}
+              onChange={(e) => {
+                // 允许清空/多位数中间态，失焦或回车再 clamp
+                const next = e.target.value
+                if (next !== '' && !/^\d{0,3}$/.test(next)) return
+                setDurationDraft(next)
+              }}
+              onBlur={() => commitDurationDraft(durationDraft)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  commitDurationDraft(durationDraft ?? e.currentTarget.value)
+                  setOpen(null)
+                }
+              }}
             />
           </label>
         </div>

@@ -28,12 +28,99 @@ LLM_PROMPT_SHARE = 0.7
 # 费率表视频展示用的对照时长
 VIDEO_RATE_SAMPLE_SECONDS = 5.0
 
-# 本站视频结算参考价（16:9、无视频输入、5 秒）→ 各清晰度价（元）；用于展示与预扣
-VENDOR_VIDEO_YUAN_5S_BY_RES: dict[str, dict[str, float]] = {
-    "seedance-2-0": {"480p": 2.31, "720p": 4.97},
-    "seedance-2-0-mini": {"480p": 0.80, "720p": 2.50},
-    "seedance-2-5": {"480p": 3.36, "720p": 7.56, "1080p": 18.71},
+# ---------------------------------------------------------------------------
+# TokenFree Volcengine Ark 渠道价目（2026-10-15 导出）
+# pricing_formula: billing_expr USD sell = official_CNY / 7.3 * 1.5
+# 本站兑回人民币：official_CNY × 1.5（与 BILLING_USD_CNY=7.3 一致）
+# ---------------------------------------------------------------------------
+TF_SEEDANCE_SELL_MARKUP = 1.5
+# 火山刊例价：元 / 百万 tokens（无视频输入=base/1080p；含视频输入=*_video）
+SEEDANCE_OFFICIAL_CNY_PER_M: dict[str, dict[str, float]] = {
+    "seedance-2.5": {"base": 70.0, "1080p": 77.0, "video": 42.0, "1080p_video": 46.0},
+    "seedance-2.0": {
+        "base": 46.0,
+        "1080p": 51.0,
+        "video": 28.0,
+        "1080p_video": 31.0,
+        "4k": 26.0,
+        "4k_video": 16.0,
+    },
+    "seedance-2.0-fast": {"base": 37.0, "video": 22.0},
 }
+# TF 渠道导出的完整 billing_expr（权威；公开 /api/pricing 缺失时注入）
+SEEDANCE_TF_BILLING_EXPR: dict[str, str] = {
+    "seedance-2.5": (
+        'u("resolution") == "1080p" && u("video_input") == "video" ? '
+        'tier("1080p_video", u("tokens") * (46 / 7.3 * 1.5) / 1000000) : '
+        'u("resolution") == "1080p" ? '
+        'tier("1080p", u("tokens") * (77 / 7.3 * 1.5) / 1000000) : '
+        'u("video_input") == "video" ? '
+        'tier("video", u("tokens") * (42 / 7.3 * 1.5) / 1000000) : '
+        'tier("base", u("tokens") * (70 / 7.3 * 1.5) / 1000000)'
+    ),
+    "seedance-2.0": (
+        'u("resolution") == "4k" && u("video_input") == "video" ? '
+        'tier("4k_video", u("tokens") * (16 / 7.3 * 1.5) / 1000000) : '
+        'u("resolution") == "4k" ? '
+        'tier("4k", u("tokens") * (26 / 7.3 * 1.5) / 1000000) : '
+        'u("resolution") == "1080p" && u("video_input") == "video" ? '
+        'tier("1080p_video", u("tokens") * (31 / 7.3 * 1.5) / 1000000) : '
+        'u("resolution") == "1080p" ? '
+        'tier("1080p", u("tokens") * (51 / 7.3 * 1.5) / 1000000) : '
+        'u("video_input") == "video" ? '
+        'tier("video", u("tokens") * (28 / 7.3 * 1.5) / 1000000) : '
+        'tier("base", u("tokens") * (46 / 7.3 * 1.5) / 1000000)'
+    ),
+    "seedance-2.0-fast": (
+        'u("video_input") == "video" ? '
+        'tier("video", u("tokens") * (22 / 7.3 * 1.5) / 1000000) : '
+        'tier("base", u("tokens") * (37 / 7.3 * 1.5) / 1000000)'
+    ),
+}
+# 无上游 token：按输出像素公式 W×H×24/1024（16:9 档近似）
+SEEDANCE_EST_TOKENS_PER_SEC_BY_RES: dict[str, int] = {
+    "480p": 10_000,  # ≈854×480×24/1024
+    "720p": 22_000,  # ≈1280×720×24/1024
+    "1080p": 49_000,  # ≈1920×1080×24/1024
+}
+
+
+def _seedance_vendor_yuan_5s(model: str, resolution: str) -> float:
+    """由刊例价×1.5×估 tok 推导 5 秒兜底人民币（与 TF expr 对齐）。"""
+    coeffs = SEEDANCE_OFFICIAL_CNY_PER_M.get(model) or {}
+    if not coeffs:
+        return 0.0
+    res = (resolution or "720p").strip().lower()
+    if res == "1080p" and "1080p" in coeffs:
+        official = float(coeffs["1080p"])
+    else:
+        official = float(coeffs.get("base") or 0)
+    tok = int(SEEDANCE_EST_TOKENS_PER_SEC_BY_RES.get(res, 22_000)) * int(VIDEO_RATE_SAMPLE_SECONDS)
+    return round(tok / 1_000_000.0 * official * TF_SEEDANCE_SELL_MARKUP, 2)
+
+
+# 本站视频结算兜底价（元 / 5 秒）：由上方 TF 刊例推导；旧 ¥0.50/秒表已作废
+VENDOR_VIDEO_YUAN_5S_BY_RES: dict[str, dict[str, float]] = {
+    mid: {
+        res: _seedance_vendor_yuan_5s(mid, res)
+        for res in ("480p", "720p", "1080p")
+        if _seedance_vendor_yuan_5s(mid, res) > 0
+        and not (mid == "seedance-2.0-fast" and res == "1080p")
+    }
+    for mid in ("seedance-2.5", "seedance-2.0", "seedance-2.0-fast")
+}
+# mini / 连字符别名 → 与规范 id 同价
+VENDOR_VIDEO_YUAN_5S_BY_RES.update(
+    {
+        "seedance-2.0-mini": dict(VENDOR_VIDEO_YUAN_5S_BY_RES["seedance-2.0"]),
+        "seedance-2-0": dict(VENDOR_VIDEO_YUAN_5S_BY_RES["seedance-2.0"]),
+        "seedance-2-0-mini": dict(VENDOR_VIDEO_YUAN_5S_BY_RES["seedance-2.0"]),
+        "seedance-2-5": dict(VENDOR_VIDEO_YUAN_5S_BY_RES["seedance-2.5"]),
+        "seedance-2-0-fast": dict(VENDOR_VIDEO_YUAN_5S_BY_RES["seedance-2.0-fast"]),
+    }
+)
+# Seedance 秒价表硬底：仅挡住低于旧错误表 ¥0.50/秒 的脏数据
+SEEDANCE_VENDOR_FLOOR_YUAN_PER_SEC = 0.5
 # MiniMax-H3：约 $0.08/秒（768P）；本站仅开放 720p；人民币按 billing_usd_cny 折算
 MINIMAX_H3_USD_PER_SEC_720P = 0.08
 
@@ -41,7 +128,7 @@ MINIMAX_H3_USD_PER_SEC_720P = 0.08
 def minimax_h3_yuan_per_sec(settings: Settings | None = None) -> float:
     """MiniMax-H3 720p 结算参考秒价（人民币）。"""
     s = settings or get_settings()
-    fx = float(getattr(s, "billing_usd_cny", 0) or 7.0)
+    fx = float(getattr(s, "billing_usd_cny", 0) or 7.3)
     return MINIMAX_H3_USD_PER_SEC_720P * fx
 
 
@@ -90,60 +177,60 @@ RECOMMENDED_MODELS: tuple[dict[str, Any], ...] = (
         "recommended": False,
     },
     {
-        "id": "gpt-image-2",
+        "id": "seedream-5.0-pro",
         "capability": "image",
-        "label": "GPT Image 2",
-        "note": "KIE.AI Market default 渠道启用模型；计费按 Kie 2K 约 $0.05/张",
+        "label": "Seedream 5.0 Pro",
+        "note": "定妆与分镜静帧首选",
         "recommended": True,
     },
     {
-        "id": "nano-banana-2",
+        "id": "seedream-5.0",
         "capability": "image",
-        "label": "Nano Banana 2",
-        "note": "极便宜闪图，草稿/批量",
+        "label": "Seedream 5.0",
+        "note": "标准静帧",
         "recommended": False,
     },
     {
-        "id": "seedance-2-5",
+        "id": "seedream-5.0-flash",
+        "capability": "image",
+        "label": "Seedream 5.0 Flash",
+        "note": "更快更省草稿档",
+        "recommended": False,
+    },
+    {
+        "id": "gpt-image-2",
+        "capability": "image",
+        "label": "GPT Image 2",
+        "note": "OpenAI 生图，约 $0.075/次",
+        "recommended": False,
+    },
+    {
+        "id": "seedance-2.5",
         "capability": "video",
         "label": "Seedance 2.5",
         "note": "默认成片，最长约 30 秒",
         "recommended": True,
     },
     {
-        "id": "seedance-2-0",
+        "id": "seedance-2.0",
         "capability": "video",
         "label": "Seedance 2.0",
-        "note": "标准 2.0，与 Mini 不同价档",
+        "note": "标准 2.0，4–15 秒",
         "recommended": False,
     },
     {
-        "id": "seedance-2-0-mini",
+        "id": "MiniMax-H3",
         "capability": "video",
-        "label": "Seedance 2.0 Mini",
-        "note": "更快更便宜的备选",
+        "label": "MiniMax H3",
+        "note": "4–15 秒，仅 720p",
         "recommended": False,
     },
     {
         "id": "qwen-tts-2025-05-22",
         "capability": "audio",
         "label": "Qwen TTS",
-        "note": "默认配音逻辑名；Ali /audio/speech 未实现，实际走 qwen3-omni-flash 流式 chat",
+        "note": "默认配音；TokenFree 目录按量计费",
         "recommended": True,
-    },
-    {
-        "id": "gemini-3.1-flash-tts",
-        "capability": "audio",
-        "label": "Gemini 3.1 Flash TTS",
-        "note": "TokenFree 目录备选配音",
-        "recommended": True,
-    },
-    {
-        "id": "elevenlabs-tts",
-        "capability": "audio",
-        "label": "ElevenLabs TTS",
-        "note": "TokenFree 目录备选配音",
-        "recommended": False,
     },
 )
 
@@ -346,34 +433,46 @@ def video_catalog_id(model: str) -> str:
     mapped = canonicalize_channel_model_id(model)
     if _is_canonical_seedance(mapped):
         return mapped
-    return "seedance-2-5"
+    return "seedance-2.5"
 
 
 def _is_canonical_seedance(model: str) -> bool:
-    """是否为 TokenFree 目录里的三档 Seedance id。"""
-    return model in {"seedance-2-5", "seedance-2-0", "seedance-2-0-mini"}
+    """是否为 TokenFree 目录里的 Seedance id。"""
+    return model in {
+        "seedance-2.5",
+        "seedance-2.0",
+        "seedance-2.0-fast",
+        "seedance-2.0-mini",
+        # 旧连字符
+        "seedance-2-5",
+        "seedance-2-0",
+        "seedance-2-0-mini",
+    }
 
 
 def canonicalize_channel_model_id(model: str) -> str:
-    """已知 Seedance 别名收到 TokenFree 目录 id；对不上则原样返回。"""
+    """已知 Seedance 别名收到 TokenFree 目录 id（点分）；对不上则原样返回。"""
     mid = (model or "").strip()
     if "seedance" not in mid.lower():
         return mid
     low = mid.lower()
-    if "mini" in low:
-        return "seedance-2-0-mini"
+    # Mini / TF 笔误 mimi：无独立 expr，规范到 2.0（避免提交 doubao-*-mini 报 ModelNotOpen）
+    if "mimi" in low or "mini" in low:
+        return "seedance-2.0"
+    if "fast" in low:
+        return "seedance-2.0-fast"
     if any(token in low for token in ("2-5", "2.5", "260628")):
-        return "seedance-2-5"
+        return "seedance-2.5"
     if any(token in low for token in ("2-0", "2.0", "260128")):
-        return "seedance-2-0"
+        return "seedance-2.0"
     compact = low.replace("_", "-")
     if compact in {"seedance-2", "seedance2"} or compact.endswith("seedance-2"):
-        return "seedance-2-0"
+        return "seedance-2.0"
     return mid
 
 
 def canonicalize_channel_models(models: list[str] | None) -> list[str]:
-    """合并 Seedance 2.0 三档别名，保持原顺序。"""
+    """合并 Seedance 别名，保持原顺序。"""
     out: list[str] = []
     seen: set[str] = set()
     for raw in models or []:
@@ -458,6 +557,27 @@ def resolve_billing_image_size(settings: Settings, *, model: str = "", size: str
     return raw
 
 
+def seedream_image_tier_facts(size: str | None = "") -> dict[str, int]:
+    """为 TokenFree Seedream 按张表达式补齐 images_up_to_1_5k / images_above_1_5k。"""
+    raw = (size or "").strip().upper().replace(" ", "")
+    above = True
+    if raw.startswith("1K") or raw in {"512", "1024", "768"}:
+        above = False
+    elif raw.startswith(("2K", "3K", "4K")):
+        above = True
+    else:
+        for sep in ("X", "×"):
+            if sep not in raw:
+                continue
+            left, right = raw.split(sep, 1)
+            if left.isdigit() and right.isdigit():
+                above = max(int(left), int(right)) > 1536
+            break
+    if above:
+        return {"images_up_to_1_5k": 0, "images_above_1_5k": 1, "input_images": 0}
+    return {"images_up_to_1_5k": 1, "images_above_1_5k": 0, "input_images": 0}
+
+
 def charge_fen_official_image(settings: Settings, *, model: str = "", size: str = "") -> int:
     """生图预估：价目里有按次价或表达式时用 TokenFree 规则；否则 Kie 积分档保底。"""
     from app.services.billing.pricing import kie_credits_to_cost_fen
@@ -467,12 +587,19 @@ def charge_fen_official_image(settings: Settings, *, model: str = "", size: str 
     raw_model = model or getattr(settings, "model_image", "") or ""
     mid = tokenfree_working_image_model(raw_model)
     resolved = resolve_billing_image_size(settings, model=raw_model, size=size)
+    usage_facts: dict[str, Any] = {
+        "results": 1,
+        "image_count": 1,
+        "resolution": (resolved or "").lower(),
+    }
+    if is_seedream_family(raw_model) or "seedream" in mid.lower():
+        usage_facts.update(seedream_image_tier_facts(resolved))
     verified = quote_verified_charge_fen(
         model=mid,
         prompt=0,
         completion=0,
         total=0,
-        usage={"results": 1, "image_count": 1, "resolution": (resolved or "").lower()},
+        usage=usage_facts,
         settings=settings,
     )
     if verified is not None and verified > 0:
@@ -520,6 +647,54 @@ def normalize_video_resolution(resolution: str | None, settings: Settings | None
     return fallback if fallback in VIDEO_RESOLUTION_MULT else "480p"
 
 
+def estimate_seedance_billing_tokens(
+    seconds: float,
+    resolution: str = "",
+    settings: Settings | None = None,
+) -> int:
+    """无上游 token 时按片长×清晰度估（像素公式）；对齐 TF，不用扁平 4 万盖掉分档。"""
+    s = settings or get_settings()
+    secs = max(float(seconds or 0), 2.0)
+    res = normalize_video_resolution(resolution, s)
+    if res in SEEDANCE_EST_TOKENS_PER_SEC_BY_RES:
+        tps = int(SEEDANCE_EST_TOKENS_PER_SEC_BY_RES[res])
+    else:
+        tps = int(getattr(s, "billing_est_seedance_tokens_per_sec", 0) or 22_000)
+    return max(1, int(math.ceil(secs * tps)))
+
+
+def builtin_seedance_official_rates() -> dict[str, OfficialRate]:
+    """TF Ark 渠道导出的 Seedance 价目；公开接口缺失时注入。"""
+    out: dict[str, OfficialRate] = {}
+    for mid, expr in SEEDANCE_TF_BILLING_EXPR.items():
+        coeffs = SEEDANCE_OFFICIAL_CNY_PER_M.get(mid) or {}
+        sell_per_m = float(coeffs.get("base") or 0) * TF_SEEDANCE_SELL_MARKUP
+        out[mid] = OfficialRate(
+            model=mid,
+            billing="token",
+            usd_per_call=0.0,
+            cny_per_call=0.0,
+            cny_in_per_1m=sell_per_m,
+            cny_out_per_1m=sell_per_m,
+            model_ratio=0.0,
+            placeholder=False,
+            tags="video",
+            endpoints=("video",),
+            capability="video",
+            billing_mode="tiered_expr",
+            billing_expr=expr,
+        )
+    return out
+
+
+def merge_seedance_tf_rates(rates: dict[str, OfficialRate] | None) -> dict[str, OfficialRate]:
+    """用 TF 渠道导出的 Seedance expr 覆盖/补齐本地缓存。"""
+    merged = dict(rates or {})
+    for mid, rate in builtin_seedance_official_rates().items():
+        merged[mid] = rate
+    return merged
+
+
 def _is_minimax_video_model(model: str) -> bool:
     """是否 MiniMax 视频模型（勿走 Seedance video_catalog_id 回退）。"""
     return "minimax" in (model or "").strip().lower()
@@ -543,7 +718,7 @@ def vendor_video_yuan_per_sec(
     resolution: str,
     settings: Settings | None = None,
 ) -> float | None:
-    """本站视频结算参考秒价；无对应档位返回 None。"""
+    """本站视频结算兜底秒价；无对应档位返回 None。Seedance 不低于 ¥1.5/秒。"""
     mid = (model or "").strip()
     if not mid:
         return None
@@ -554,7 +729,10 @@ def vendor_video_yuan_per_sec(
     tiers = VENDOR_VIDEO_YUAN_5S_BY_RES.get(key)
     if not tiers or res not in tiers:
         return None
-    return float(tiers[res]) / VIDEO_RATE_SAMPLE_SECONDS
+    rate = float(tiers[res]) / VIDEO_RATE_SAMPLE_SECONDS
+    if "seedance" in key.lower():
+        rate = max(rate, float(SEEDANCE_VENDOR_FLOOR_YUAN_PER_SEC))
+    return rate
 
 
 def format_video_pricing_hint(model: str) -> str:
@@ -613,8 +791,9 @@ def charge_fen_official_video(
     *,
     model: str = "",
     resolution: str = "",
+    tokens: int | None = None,
 ) -> int:
-    """视频费用 = 该清晰度的秒价 × 时长。有表达式时走 TokenFree，否则用本站秒价表。"""
+    """视频费用：优先 TokenFree 表达式（常按 u(tokens)）；否则清晰度秒价表。"""
     from app.services.billing.pricing import charge_fen_for_tokens
 
     secs = max(float(seconds or 0), 2.0)
@@ -622,16 +801,24 @@ def charge_fen_official_video(
     res = normalize_video_resolution(resolution, settings)
     from app.services.billingexpr import quote_verified_charge_fen
 
+    # TokenFree Seedance 现价多为 u("tokens")；无上游 token 时按清晰度估，避免 1080p 按扁平 4 万/秒低估
+    try:
+        tok = int(tokens or 0)
+    except (TypeError, ValueError):
+        tok = 0
+    if tok <= 0:
+        tok = estimate_seedance_billing_tokens(secs, res, settings)
     verified = quote_verified_charge_fen(
         model=raw,
         prompt=0,
         completion=0,
-        total=0,
+        total=tok,
         usage={
             "seconds": secs,
             "resolution": res,
             "input_video_seconds": 0,
             "tier": "",
+            "tokens": tok,
         },
         settings=settings,
     )
@@ -645,8 +832,7 @@ def charge_fen_official_video(
         rate = vendor_video_yuan_per_sec(mid, res, settings)
     if rate is not None:
         return _markup_charge(max(1, int(math.ceil(secs * rate * 100))), settings)
-    mult = VIDEO_RESOLUTION_MULT[res]
-    tok = int(secs * settings.billing_est_seedance_tokens_per_sec * mult)
+    tok = estimate_seedance_billing_tokens(secs, res, settings)
     _, charge = charge_fen_for_tokens(tok, "seedance2:video0", settings=settings)
     return charge
 
@@ -782,21 +968,28 @@ async def fetch_tokenfree_pricing() -> dict[str, Any]:
 
 
 async def ensure_official_rates(settings: Settings | None = None) -> dict[str, OfficialRate]:
-    """有缓存且未过期则复用；失败写短 TTL，预扣不因外网挂掉。"""
+    """有缓存且未过期则复用；失败写短 TTL，预扣不因外网挂掉。
+
+    Seedance 始终用 TF Ark 渠道导出的 billing_expr 覆盖，避免公开价目漂移。
+    """
     ttl = _FAIL_TTL_SEC if _cache_failed else _CACHE_TTL_SEC
     if _cache is not None and _cache_at and (time.monotonic() - _cache_at) < ttl:
-        return _cache
+        return merge_seedance_tf_rates(_cache)
     try:
         payload = await fetch_tokenfree_pricing()
         parsed = parse_pricing_payload(payload, settings)
         if parsed:
-            set_cached_rates(parsed)
-            return parsed
+            merged = merge_seedance_tf_rates(parsed)
+            set_cached_rates(merged)
+            return merged
         _mark_fetch_failed()
     except (RuntimeError, ValueError, TypeError) as exc:
         logger.info("tokenfree pricing skipped: %s", exc)
         _mark_fetch_failed()
-    return cached_rates()
+    fallback = merge_seedance_tf_rates(cached_rates())
+    if fallback:
+        set_cached_rates(fallback)
+    return fallback
 
 
 async def billing_official_rate_rows(settings: Settings | None = None) -> list[dict[str, Any]]:

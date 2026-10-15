@@ -748,6 +748,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
               ((next.params || {}).generation as { status?: string } | undefined)?.status || '',
             )
             const stillBusy = genStatus === 'queued' || genStatus === 'generating'
+            /* 提示词以框内为准，生图后不回写三视图等到框 */
             setNodes((current) =>
               current.map((n) =>
                 n.id === nodeId
@@ -797,17 +798,23 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
     [ensureNodeAsset, markDirty, projectId, projectImageStyleId, pushSnapshot],
   )
 
-  /** 收集连入当前节点的参考资产 ID */
-  const collectIncomingAssetIds = useCallback((nodeId: string) => {
+  /**
+   * 收集与当前节点已连线的参考资产 ID（双向）。
+   * 与 @ 提及可选邻居一致：边方向不限，避免只连出时漏传参考图。
+   */
+  const collectConnectedAssetIds = useCallback((nodeId: string) => {
     const ids: number[] = []
     const seen = new Set<number>()
-    for (const edge of edgesRef.current) {
-      if (edge.target !== nodeId) continue
-      const source = nodesRef.current.find((n) => n.id === edge.source)
-      const assetId = source?.data.assetId
-      if (typeof assetId !== 'number' || assetId <= 0 || seen.has(assetId)) continue
+    const pushNeighbor = (neighborId: string) => {
+      const neighbor = nodesRef.current.find((n) => n.id === neighborId)
+      const assetId = neighbor?.data.assetId
+      if (typeof assetId !== 'number' || assetId <= 0 || seen.has(assetId)) return
       seen.add(assetId)
       ids.push(assetId)
+    }
+    for (const edge of edgesRef.current) {
+      if (edge.target === nodeId) pushNeighbor(edge.source)
+      else if (edge.source === nodeId) pushNeighbor(edge.target)
     }
     return ids
   }, [])
@@ -851,7 +858,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
             resolution: options?.resolution,
             duration_sec: options?.duration_sec,
           },
-          referenceAssetIds: collectIncomingAssetIds(nodeId),
+          referenceAssetIds: collectConnectedAssetIds(nodeId),
         })
         const mediaUrl = resolveDramaMediaUrl(latest.url || latest.cover || '')
         if (!mediaUrl) throw new Error('生视频超时，请重试')
@@ -882,7 +889,7 @@ export function CanvasStoreProvider({ projectId, children }: CanvasStoreProvider
       }
     },
     [
-      collectIncomingAssetIds,
+      collectConnectedAssetIds,
       ensureNodeAsset,
       markDirty,
       projectId,

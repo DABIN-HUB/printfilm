@@ -15,6 +15,7 @@ import {
 } from '../../../../lib/dramaVideoGenerationOptions'
 import { optimizePromptWithSkills } from '../../../../api/agentSkills'
 import { useAgentSkillSelection } from '../../../../hooks/useAgentSkillSelection'
+import { ensureStructureInPrompt } from '../../../../lib/dramaStructurePrompt'
 import { DramaImageGenOptionsBar } from './DramaImageGenOptionsBar'
 import { DramaSkillOptionsBar } from './DramaSkillOptionsBar'
 import { DramaVideoGenOptionsBar } from './DramaVideoGenOptionsBar'
@@ -190,13 +191,15 @@ export function CanvasNodeGeneratePanel({
     if (!canSubmit) return
     setBusy(true)
     try {
-      updateNodePrompt(nodeId, prompt)
+      // 提示词以框内为准（抽取/生成提示词时已含三视图等结构）；生图不再动态拼接
+      const finalPrompt = prompt.trim()
+      updateNodePrompt(nodeId, finalPrompt)
       if (isVideo) {
         updateNodeVideoOptions(nodeId, videoOpts)
-        await generateNodeVideo(nodeId, prompt, videoOpts)
+        await generateNodeVideo(nodeId, finalPrompt, videoOpts)
       } else {
         updateNodeImageOptions(nodeId, imageOptions)
-        await generateNodeImage(nodeId, prompt, imageOptions)
+        await generateNodeImage(nodeId, finalPrompt, imageOptions)
       }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : '生成失败')
@@ -210,7 +213,7 @@ export function CanvasNodeGeneratePanel({
     void submit()
   }
 
-  // 按勾选 Skill 改写当前提示词，保留 @asset 引用
+  // 按勾选 Skill 改写当前提示词；若优化丢掉结构前缀则补回（写入框内，非生图时静默携带）
   const optimizePrompt = async () => {
     if (!canOptimize) return
     setOptimizing(true)
@@ -220,7 +223,10 @@ export function CanvasNodeGeneratePanel({
         skill_ids: selectedIds,
         task: isVideo ? 'video_prompt' : 'image_prompt',
       })
-      const next = (result.prompt || '').trim()
+      let next = (result.prompt || '').trim()
+      if (next && !isVideo) {
+        next = ensureStructureInPrompt(next, kind)
+      }
       if (next) {
         setPrompt(next)
         updateNodePrompt(nodeId, next)

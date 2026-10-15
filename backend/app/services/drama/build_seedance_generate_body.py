@@ -156,25 +156,32 @@ def drama_asset_to_payload(asset: DramaAsset) -> dict[str, Any]:
     }
 
 
+def _voice_audio_url_from_value(voice_audio: Any) -> str | None:
+    """从 voiceAudio 字段取值：支持 {url}/previewUrl 对象，或历史/OSS 回填后的纯字符串 URL。"""
+    if isinstance(voice_audio, str):
+        url = voice_audio.strip()
+        return url or None
+    if isinstance(voice_audio, dict):
+        url = voice_audio.get("url") or voice_audio.get("previewUrl")
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+    return None
+
+
 # 读取角色绑定的参考音频 URL（兼容 voiceAudio 与 canvas.voiceAudio）
 def read_asset_voice_audio_url(params: Any) -> str | None:
     if not isinstance(params, dict):
         return None
 
-    for key in ("voiceAudio",):
-        voice_audio = params.get(key)
-        if isinstance(voice_audio, dict):
-            url = voice_audio.get("url") or voice_audio.get("previewUrl")
-            if isinstance(url, str) and url.strip():
-                return url.strip()
+    direct = _voice_audio_url_from_value(params.get("voiceAudio"))
+    if direct:
+        return direct
 
     canvas = params.get("canvas")
     if isinstance(canvas, dict):
-        voice_audio = canvas.get("voiceAudio")
-        if isinstance(voice_audio, dict):
-            url = voice_audio.get("url") or voice_audio.get("previewUrl")
-            if isinstance(url, str) and url.strip():
-                return url.strip()
+        nested = _voice_audio_url_from_value(canvas.get("voiceAudio"))
+        if nested:
+            return nested
 
     return None
 
@@ -201,8 +208,37 @@ def resolve_asset_prompt_name(asset: dict[str, Any], fallback: str) -> str:
     return entity or (asset.get("name") or "").strip() or fallback
 
 
+def _voice_binding_label(params: Any) -> str:
+    """从 voiceAudio.label 取可读音色/角色名（画布误名时的回退）。"""
+    if not isinstance(params, dict):
+        return ""
+    for key in ("voiceAudio",):
+        binding = params.get(key)
+        if isinstance(binding, dict):
+            label = str(binding.get("label") or "").strip()
+            if label and label not in {"音色", "试听", "音频"}:
+                return label
+    canvas = params.get("canvas")
+    if isinstance(canvas, dict):
+        binding = canvas.get("voiceAudio")
+        if isinstance(binding, dict):
+            label = str(binding.get("label") or "").strip()
+            if label and label not in {"音色", "试听", "音频"}:
+                return label
+    return ""
+
+
 def resolve_character_prompt_name(asset: dict[str, Any]) -> str:
-    return resolve_asset_prompt_name(asset, "角色")
+    """写入提示词的角色名；纯数字/单字名回退音色标签，再回退角色#id。"""
+    name = resolve_asset_prompt_name(asset, "角色")
+    compact = re.sub(r"\s+", "", name)
+    if not compact or compact.isdigit() or len(compact) <= 1:
+        voice_label = _voice_binding_label(asset.get("params"))
+        if voice_label and not voice_label.isdigit() and len(re.sub(r"\s+", "", voice_label)) > 1:
+            return voice_label
+        asset_id = asset.get("id")
+        return f"角色{asset_id}" if asset_id is not None else "角色"
+    return name
 
 
 def resolve_narration_prompt_name(asset: dict[str, Any]) -> str:
@@ -217,9 +253,13 @@ def resolve_other_asset_prompt_name(asset: dict[str, Any]) -> str:
     return resolve_asset_prompt_name(asset, f"资产#{asset.get('id')}")
 
 
-def _prepare_voice_script(content: str | None) -> str:
-    """提交前脚本：拆舞台指示、纠正空镜误标、角色 VO 改对白。"""
-    normalized = rewrite_dialogue_action_lines(content or "")
+def _prepare_voice_script(
+    content: str | None,
+    reference: list[dict[str, Any]] | None = None,
+) -> str:
+    """提交前脚本：自由口播拆行、拆舞台指示、纠正空镜误标、角色 VO 改对白。"""
+    normalized = normalize_canvas_freeform_speech(content, reference)
+    normalized = rewrite_dialogue_action_lines(normalized)
     return rewrite_misclassified_visual_voice_lines(normalized)
 
 
@@ -227,11 +267,185 @@ def _prepare_voice_script(content: str | None) -> str:
 _FREEFORM_SPEECH_RE = re.compile(
     r"(?:说(?:道|着)?[：:\s]|\{[^{}\n]{2,}\}|张嘴|开口说话|对白|台词|口播|念出|大声说)",
 )
+# 画布「他说："台词"」→ 拆成画面行 + 对白行，便于绑定 @音频
+# 动词前禁止 据/听/传/再/小 等，避免「据说/听说/小说」误拆
+_FREEFORM_SAID_QUOTE_RE = re.compile(
+    r"^(?P<head>.*?)(?P<verb>(?<![据听传再小])(?:他|她|它)?说(?:道|着)?)\s*[：:]\s*"
+    r"[「\"“'](?P<quote>[^」\"”']{1,200})[」\"”']"
+    r"(?P<tail>.*)$"
+)
+# 画布/即梦「说{台词}」：Seedance 原生 {}=对白，须拆出【对白】，禁止留在【画面·无配音】里
+_FREEFORM_BRACE_SPEECH_RE = re.compile(
+    r"^(?P<head>.*?)(?P<verb>(?<![据听传再小])(?:他|她|它)?说(?:道|着)?)\s*"
+    r"\{(?P<quote>[^{}\n]{1,200})\}"
+    r"(?P<tail>.*)$"
+)
+# 画面行内残留的 说{…} / {…}（抽完对白后清掉，避免与无配音冲突）
+_RESIDUAL_SAY_BRACE_RE = re.compile(
+    r"(?:(?<![据听传再小])(?:他|她|它)?说(?:道|着)?)?\s*\{([^{}\n]{1,200})\}"
+)
+# 行内裸 {台词}（即梦语法，无「说」动词）
+_FREEFORM_BARE_BRACE_RE = re.compile(
+    r"^(?P<head>.*?)\{(?P<quote>[^{}\n]{2,200})\}(?P<tail>.*)$"
+)
+# 花括号内容像画面描述而非台词（含景别/资产 id 等）
+_BRACE_VISUAL_HINT_RE = re.compile(
+    r"(?:^@asset:\d+|^\d{2,}\b|中景|近景|远景|特写|全景|门口|背景是|镜头|日景|夜景|站在|正面朝向)"
+)
 
 
 def _script_has_freeform_speech(script: str) -> bool:
     """画布常见写法：说 xxx / {台词} / 张嘴说话。"""
     return bool(_FREEFORM_SPEECH_RE.search(script or ""))
+
+
+def _brace_content_is_visual(quote: str) -> bool:
+    """花括号内是画面描述（非口播台词）时返回 True。"""
+    text = (quote or "").strip()
+    if not text:
+        return True
+    if _BRACE_VISUAL_HINT_RE.search(text):
+        return True
+    return False
+
+
+def _strip_residual_say_braces(text: str) -> str:
+    """去掉行内残留 说{…}/{…}（调用方已抽出台词或判定为画面噪声）。"""
+    cleaned = _RESIDUAL_SAY_BRACE_RE.sub("", text or "")
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip(" ，,。．")
+
+
+def _primary_character_mention(script: str, reference: list[dict[str, Any]] | None) -> str:
+    """取正文里第一个角色 @asset，或唯一角色资产名，供自由口播行挂说话人。"""
+    names_by_id: dict[int, str] = {}
+    character_assets: list[dict[str, Any]] = []
+    for asset in reference or []:
+        if asset.get("type") != "character":
+            continue
+        character_assets.append(asset)
+        names_by_id[int(asset["id"])] = resolve_character_prompt_name(asset)
+    for token in ASSET_MENTION_TOKEN_PATTERN.findall(script or ""):
+        mapped = names_by_id.get(int(token))
+        if mapped:
+            return f"@asset:{token}"
+    if len(character_assets) == 1:
+        only = character_assets[0]
+        return f"@asset:{int(only['id'])}"
+    if character_assets:
+        return resolve_character_prompt_name(character_assets[0])
+    return "角色"
+
+
+def _emit_visual_and_dialogue(
+    *,
+    head: str,
+    quote: str,
+    tail: str,
+    speaker_src: str,
+    reference: list[dict[str, Any]] | None,
+    visual_prefix: str,
+) -> list[str]:
+    """拼画面行 + 对白行；画面行清掉残留花括号。"""
+    speaker = _primary_character_mention(speaker_src, reference)
+    visual = " ".join(part for part in (head, tail) if part).strip()
+    visual = _strip_residual_say_braces(visual)
+    rows: list[str] = []
+    if visual:
+        if not visual.startswith("【画面") and not visual.startswith("【空镜"):
+            visual = f"{visual_prefix}{visual}"
+        rows.append(visual)
+    rows.append(f"【对白·慢速清晰】{speaker}：{quote}")
+    return rows
+
+
+def normalize_canvas_freeform_speech(
+    content: str | None,
+    reference: list[dict[str, Any]] | None,
+) -> str:
+    """画布自由句：把「他说："…" / 说{…}」拆成【画面】+【对白】，并清掉画面行残留 {}。"""
+    from app.services.seedance_segments import VISUAL_PREFIX
+
+    out: list[str] = []
+    for raw in (content or "").replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("@duration:") or is_production_meta_line(line):
+            out.append(raw)
+            continue
+        if line.startswith("【对白") or line.startswith("【旁白") or line.startswith("【内心"):
+            out.append(raw)
+            continue
+
+        match = _FREEFORM_SAID_QUOTE_RE.match(line)
+        if match:
+            head = (match.group("head") or "").strip().rstrip("，,。． ")
+            quote = (match.group("quote") or "").strip()
+            tail = (match.group("tail") or "").strip()
+            if quote:
+                out.extend(
+                    _emit_visual_and_dialogue(
+                        head=head,
+                        quote=quote,
+                        tail=tail,
+                        speaker_src=line,
+                        reference=reference,
+                        visual_prefix=VISUAL_PREFIX,
+                    )
+                )
+                continue
+
+        brace = _FREEFORM_BRACE_SPEECH_RE.match(line)
+        if brace:
+            head = (brace.group("head") or "").strip().rstrip("，,。． ")
+            quote = (brace.group("quote") or "").strip()
+            tail = (brace.group("tail") or "").strip()
+            if quote and not _brace_content_is_visual(quote):
+                out.extend(
+                    _emit_visual_and_dialogue(
+                        head=head,
+                        quote=quote,
+                        tail=tail,
+                        speaker_src=line,
+                        reference=reference,
+                        visual_prefix=VISUAL_PREFIX,
+                    )
+                )
+                continue
+            # 画面型 {…}：只删花括号，不升格为对白
+            cleaned = _strip_residual_say_braces(line)
+            if cleaned:
+                out.append(cleaned)
+            elif head:
+                out.append(head)
+            else:
+                out.append(raw)
+            continue
+
+        # 裸 {台词}：升格对白；画面型 {…} 只删除
+        if "{" in line and "}" in line:
+            bare = _FREEFORM_BARE_BRACE_RE.match(line)
+            if bare:
+                quote = (bare.group("quote") or "").strip()
+                head = (bare.group("head") or "").strip().rstrip("，,。． ")
+                tail = (bare.group("tail") or "").strip()
+                if quote and not _brace_content_is_visual(quote):
+                    out.extend(
+                        _emit_visual_and_dialogue(
+                            head=head,
+                            quote=quote,
+                            tail=tail,
+                            speaker_src=line,
+                            reference=reference,
+                            visual_prefix=VISUAL_PREFIX,
+                        )
+                    )
+                    continue
+            cleaned = _strip_residual_say_braces(line)
+            if cleaned and cleaned != line:
+                out.append(cleaned)
+                continue
+
+        out.append(raw)
+    return "\n".join(out)
 
 
 def collect_speaking_character_names(
@@ -265,7 +479,11 @@ def collect_speaking_character_names(
         if line.startswith("【画面") or line.startswith("【空镜"):
             continue
         body = VOICE_CUE_PREFIX_RE.sub("", line).strip()
-        kind = classify_voice_body(body)
+        # 已标【对白/内心】的行直接视为开口，避免 @asset: 等形态 classify 失败丢音色
+        if line.startswith("【对白") or line.startswith("【内心"):
+            kind = "dialogue" if line.startswith("【对白") else "inner"
+        else:
+            kind = classify_voice_body(body)
         if kind not in {"dialogue", "inner"}:
             continue
         for token in ASSET_MENTION_TOKEN_PATTERN.findall(body):
@@ -332,7 +550,7 @@ def build_seedance_reference_catalog(
     seen_image_asset_ids: set[int] = set()
     seen_audio_asset_ids: set[int] = set()
     filter_audio = script is not None
-    voice_script = _prepare_voice_script(script) if filter_audio else ""
+    voice_script = _prepare_voice_script(script, reference) if filter_audio else ""
     speaking = (
         collect_speaking_character_names(voice_script, reference) if filter_audio else set()
     )
@@ -358,8 +576,8 @@ def build_seedance_reference_catalog(
             if voice_audio_url and asset_id not in seen_audio_asset_ids:
                 seen_audio_asset_ids.add(asset_id)
                 catalog.audios.append(SeedanceReferenceFile(asset_id=asset_id, url=voice_audio_url))
-        elif SEEDANCE_ATTACH_REFERENCE_AUDIO and asset.get("type") == "audio":
-            # 画布独立音频节点：直接用资产 url 作为 reference_audio
+        elif SEEDANCE_ATTACH_REFERENCE_AUDIO and asset.get("type") in {"audio", "voice"}:
+            # 画布独立音频/音色节点：直接用资产 url 作为 reference_audio
             audio_url = str(asset.get("url") or asset.get("cover") or "").strip()
             if audio_url and asset_id not in seen_audio_asset_ids:
                 seen_audio_asset_ids.add(asset_id)
@@ -377,9 +595,22 @@ def build_seedance_reference_catalog(
 _KIND_ZH = {
     "character": "角色",
     "scene": "场景",
+    "image": "场景",
+    "material": "场景",
     "prop": "道具",
     "narration": "旁白",
 }
+
+# 画布「新图片」等无分类图：按场景挂强制约束，避免只进 content[] 却无场景约束
+_SCENE_LIKE_TYPES = frozenset({"scene", "image", "material"})
+
+
+def _asset_matches_reference_category(asset: dict[str, Any], category_type: str) -> bool:
+    """判断资产是否属于某类参考索引（场景含 type=image/material）。"""
+    kind = str(asset.get("type") or "").lower()
+    if category_type == "scene":
+        return kind in _SCENE_LIKE_TYPES
+    return kind == category_type
 
 
 # 按 content[] 下标生成可读标签（与 build_seedance_content_items 顺序一致）
@@ -421,9 +652,19 @@ def describe_seedance_content_slots(
 
 
 # 正文中的 @asset 替换文案
-def format_body_asset_mention(name: str, image_index: int | None) -> str:
+def format_body_asset_mention(
+    name: str,
+    image_index: int | None,
+    audio_index: int | None = None,
+) -> str:
+    """正文资产提及：角色可同时挂 @图片N 与 @音频N，便于模型对齐口令。"""
+    parts: list[str] = []
     if image_index is not None:
-        return f"{name}（参考图{image_index}）"
+        parts.append(f"@图片{image_index}/参考图{image_index}")
+    if audio_index is not None:
+        parts.append(f"@音频{audio_index}/参考音频{audio_index}")
+    if parts:
+        return f"{name}（{'，'.join(parts)}）"
     return name
 
 
@@ -431,10 +672,10 @@ def _asset_prompt_name_for_mention(asset: dict[str, Any] | None) -> str:
     """按资产类型解析写入提示词的显示名。"""
     if not asset:
         return ""
-    category = asset.get("type")
+    category = str(asset.get("type") or "").lower()
     if category == "character":
         return resolve_character_prompt_name(asset)
-    if category == "scene":
+    if category in _SCENE_LIKE_TYPES:
         return resolve_scene_prompt_name(asset)
     return resolve_other_asset_prompt_name(asset)
 
@@ -467,9 +708,17 @@ def replace_asset_mention_token(
     asset = asset_by_id.get(asset_id)
     if not asset:
         return ""
-    index_map = getattr(catalog, "image_index_by_asset_id", {}) or {}
-    image_index = index_map.get(int(asset["id"]))
-    return format_body_asset_mention(_asset_prompt_name_for_mention(asset), image_index)
+    image_index = (getattr(catalog, "image_index_by_asset_id", {}) or {}).get(int(asset["id"]))
+    audio_index = None
+    if str(asset.get("type") or "").lower() in {"character", "narration"}:
+        audio_index = (getattr(catalog, "audio_index_by_asset_id", {}) or {}).get(
+            int(asset["id"])
+        )
+    return format_body_asset_mention(
+        _asset_prompt_name_for_mention(asset),
+        image_index,
+        audio_index,
+    )
 
 
 def replace_asset_mentions_without_duplicate_names(
@@ -485,10 +734,18 @@ def replace_asset_mentions_without_duplicate_names(
         asset_id = int(match.group(1))
         token = replace_asset_mention_token(asset_id, asset_by_id, catalog)
         name = _asset_prompt_name_for_mention(asset_by_id.get(asset_id))
-        index_map = getattr(catalog, "image_index_by_asset_id", {}) or {}
-        image_index = index_map.get(asset_id)
+        image_index = (getattr(catalog, "image_index_by_asset_id", {}) or {}).get(asset_id)
+        audio_index = (getattr(catalog, "audio_index_by_asset_id", {}) or {}).get(asset_id)
         if name and _name_is_token_suffix("".join(pieces).rstrip(), name):
-            token = f"（参考图{image_index}）" if image_index is not None else ""
+            # 名字已写在 @asset 前时只保留括号索引，避免「妖皇妖皇」
+            parts: list[str] = []
+            if image_index is not None:
+                parts.append(f"@图片{image_index}/参考图{image_index}")
+            if audio_index is not None and str(
+                (asset_by_id.get(asset_id) or {}).get("type") or ""
+            ).lower() in {"character", "narration"}:
+                parts.append(f"@音频{audio_index}/参考音频{audio_index}")
+            token = f"（{'，'.join(parts)}）" if parts else ""
         end = match.end()
         skip = 0
         if name:
@@ -523,19 +780,45 @@ def build_reference_index_section(
     header: str,
     index_label: str,
     resolve_name: Any,
+    *,
+    image_index_map: dict[int, int] | None = None,
 ) -> str | None:
     lines: list[str] = []
     seen_asset_ids: set[int] = set()
 
     for asset in reference or []:
         asset_id = int(asset["id"])
-        if asset.get("type") != category_type or asset_id in seen_asset_ids:
+        if not _asset_matches_reference_category(asset, category_type) or asset_id in seen_asset_ids:
             continue
         seen_asset_ids.add(asset_id)
         reference_index = index_map.get(asset_id)
         if reference_index is None:
             continue
-        lines.append(f"{resolve_name(asset)}：{index_label}{reference_index}")
+        # 方舟官方口令用 @音频N / @图片N；音色绑定强调「图片N中的角色用音频M说」
+        if index_label in {"参考音频", "参考图"}:
+            at_token = "@音频" if index_label == "参考音频" else "@图片"
+            if index_label == "参考音频":
+                who = resolve_name(asset)
+                image_index = (image_index_map or {}).get(asset_id)
+                if image_index is not None:
+                    lines.append(
+                        f"@图片{image_index}中的角色「{who}」必须使用{at_token}{reference_index}"
+                        f"（{index_label}{reference_index}）的音色说出全部对白；"
+                        f"音色、语气、节奏与发声质感严格一致，语速自然偏慢、吐字清晰，严禁换声线"
+                    )
+                else:
+                    lines.append(
+                        f"角色「{who}」必须使用{at_token}{reference_index}"
+                        f"（{index_label}{reference_index}）的音色说出全部对白；"
+                        f"音色、语气、节奏与发声质感严格一致，语速自然偏慢、吐字清晰，严禁换声线"
+                    )
+            else:
+                lines.append(
+                    f"{resolve_name(asset)}：{at_token}{reference_index}"
+                    f"（{index_label}{reference_index}）"
+                )
+        else:
+            lines.append(f"{resolve_name(asset)}：{index_label}{reference_index}")
 
     if not lines:
         return None
@@ -551,17 +834,52 @@ def _normalize_body_whitespace(text: str) -> str:
     return "\n".join(line for line in lines if line).strip()
 
 
+_ORPHAN_ASSET_MENTION_LINE_RE = re.compile(
+    r"^(?P<name>[^（(\n【]{1,40})"
+    r"（(?P<refs>(?:@图片\d+/参考图\d+|@音频\d+/参考音频\d+|参考图\d+|参考音频\d+)"
+    r"(?:，[^）]*)?)）\s*$"
+)
+
+
+def _merge_orphan_asset_mention_lines(text: str) -> str:
+    """单独一行的「角色名（@图片N…）」并入下一行画面/对白，避免游离提及打断口令。"""
+    raw_lines = (text or "").replace("\r\n", "\n").split("\n")
+    out: list[str] = []
+    index = 0
+    while index < len(raw_lines):
+        line = raw_lines[index].strip()
+        match = _ORPHAN_ASSET_MENTION_LINE_RE.match(line) if line else None
+        if match and index + 1 < len(raw_lines):
+            nxt = raw_lines[index + 1].strip()
+            name = match.group("name").strip()
+            if nxt.startswith(("【画面", "【对白", "【旁白", "【内心")) and name:
+                if name not in nxt:
+                    cue = re.match(r"^(【[^】]+】)\s*(.*)$", nxt)
+                    if cue:
+                        nxt = f"{cue.group(1)}{name} {cue.group(2)}".rstrip()
+                    else:
+                        nxt = f"{name} {nxt}"
+                out.append(nxt)
+                index += 2
+                continue
+        out.append(raw_lines[index])
+        index += 1
+    return "\n".join(out)
+
+
 def build_seedance_body_text(
     content: str | None,
     reference: list[dict[str, Any]] | None,
     catalog: SeedanceReferenceCatalog,
 ) -> str:
-    # 拆分对白内舞台指示，并纠正误标为对白/旁白的空镜画面行
-    normalized = rewrite_dialogue_action_lines(content or "")
+    # 自由口播拆行、拆舞台指示、纠正误标为对白/旁白的空镜画面行
+    normalized = normalize_canvas_freeform_speech(content, reference)
+    normalized = rewrite_dialogue_action_lines(normalized)
     normalized = rewrite_misclassified_visual_voice_lines(normalized)
     asset_by_id = {int(asset["id"]): asset for asset in (reference or [])}
     replaced = replace_duration_mentions_with_time_ranges(normalized)
     replaced = replace_asset_mentions_without_duplicate_names(replaced, asset_by_id, catalog)
+    replaced = _merge_orphan_asset_mention_lines(replaced)
     return _normalize_body_whitespace(replaced)
 
 
@@ -575,8 +893,9 @@ def build_seedance_prompt_text(
     character_intro: bool = False,
     has_style_board: bool = False,
 ) -> str:
-    # 提交前拆分对白舞台指示并纠正空镜误标，保证强制约束与正文一致
-    normalized = rewrite_dialogue_action_lines(content or "")
+    # 提交前：自由口播拆行、拆舞台指示、纠正空镜误标，保证强制约束与正文一致
+    normalized = normalize_canvas_freeform_speech(content, reference)
+    normalized = rewrite_dialogue_action_lines(normalized)
     normalized = rewrite_misclassified_visual_voice_lines(normalized)
     if not burn_subtitles:
         # 后期模式：去掉字幕 cue /「同步字幕」前缀，避免模型仍按字烧屏
@@ -600,6 +919,7 @@ def build_seedance_prompt_text(
                     SEEDANCE_CHARACTER_VOICE_SECTION_HEADER,
                     "参考音频",
                     resolve_character_prompt_name,
+                    image_index_map=resolved_catalog.image_index_by_asset_id,
                 ),
                 build_reference_index_section(
                     reference,
@@ -608,6 +928,7 @@ def build_seedance_prompt_text(
                     SEEDANCE_NARRATION_VOICE_SECTION_HEADER,
                     "参考音频",
                     resolve_narration_prompt_name,
+                    image_index_map=resolved_catalog.image_index_by_asset_id,
                 ),
             ]
             if SEEDANCE_ATTACH_REFERENCE_AUDIO
@@ -726,20 +1047,33 @@ def build_seedance_content_items(
 
 
 def resolve_seedance_model_endpoint(model_id: str | None) -> str:
+    """解析上游视频模型 id；Seedance 旧连字符统一成 TokenFree 点分目录名。"""
+    from app.services.media_model_presets import resolve_preset_alias
+    from app.services.tokenfree_pricing import (
+        canonicalize_channel_model_id,
+        video_catalog_id,
+    )
+
     settings = get_settings()
-    raw = (model_id or "").strip()
-    logical_id = resolve_logical_model_id("video", model_id)
+    raw = resolve_preset_alias((model_id or "").strip()) or (model_id or "").strip()
+    wanted = canonicalize_channel_model_id(raw) if raw else ""
+    logical_id = resolve_logical_model_id("video", raw or model_id)
     routed = resolve_upstream_model("video", logical_id or (raw if raw else None))
     if routed:
-        return routed
+        got = canonicalize_channel_model_id(routed)
+        # 用户点名 Seedance 档位时，禁止路由静默换成另一档（mini→2.5）
+        if wanted and "seedance" in wanted.lower() and got != wanted:
+            if video_catalog_id(wanted) == wanted or "mini" in wanted or "fast" in wanted:
+                return wanted
+        return got
     if not raw:
-        return settings.model_video or (settings.model_video_2 or "").strip()
-    lowered = raw.lower()
-    if lowered in {"seedance-2", "seedance-1.5", "seedance-1"}:
-        return (settings.model_video_2 or "").strip() or settings.model_video or raw
-    if lowered == "seedance-2.5":
-        return settings.model_video or (settings.model_video_2 or "").strip() or raw
-    return raw
+        return canonicalize_channel_model_id(
+            settings.model_video or (settings.model_video_2 or "").strip()
+        )
+    # 用户点名的 Seedance 档位必须原样提交；禁止用站点默认 model_video（常为 2.0）盖掉 2.5
+    if wanted and "seedance" in wanted.lower():
+        return wanted
+    return wanted or canonicalize_channel_model_id(raw)
 
 
 def resolve_seedance_ratio(aspect_ratio: str | None) -> str:

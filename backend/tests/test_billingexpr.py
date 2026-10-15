@@ -118,6 +118,62 @@ def test_expr_without_seconds_does_not_charge_zero() -> None:
     assert usd is None
 
 
+def test_seedance_mini_token_expr_not_vendor_sec_table() -> None:
+    """TokenFree mini 现价按 u(tokens)；不得静默落到偏低本站秒价表（8s 720p≠¥4）。"""
+    from app.services.billing.pricing import charge_fen_for_usage
+
+    settings = get_settings()
+    settings.billing_usd_cny = 7.0
+    settings.billing_markup = 1.0
+    settings.billing_est_seedance_tokens_per_sec = 32_000
+    expr = (
+        'u("video_input") == "video" ? '
+        'tier("video", u("tokens") * (14 / 7.3 * 1.5) / 1000000) : '
+        'tier("base", u("tokens") * (23 / 7.3 * 1.5) / 1000000)'
+    )
+    payload = {
+        "data": [
+            {
+                "model_name": "seedance-2.0-mini",
+                "quota_type": 0,
+                "model_ratio": 37.5,
+                "completion_ratio": 1,
+                "model_price": 0,
+                "billing_mode": "tiered_expr",
+                "billing_expr": expr,
+            }
+        ]
+    }
+    set_cached_rates(parse_pricing_payload(payload, settings))
+    try:
+        # 8s × 32000 tok/s = 256000 → 但 record 用 8*32000=256000；本测用事件里的 320000
+        fen, _, _ = charge_fen_for_usage(
+            320_000,
+            "seedance2:video0",
+            raw_usage={
+                "usage": {
+                    "seconds": 8.0,
+                    "resolution": "720p",
+                    "tokens": 320_000,
+                    "input_video_seconds": 0,
+                }
+            },
+            model="seedance-2.0-mini",
+            settings=settings,
+        )
+        # 320000 * (23/7.3*1.5)/1e6 USD × 7 = ¥10.59 → 1059 分；绝不是秒价表 400
+        assert fen == 1059
+        # 无显式 tokens 时 720p 按像素估 22k/秒 → 8×22000=176000
+        auto = charge_fen_official_video(
+            8.0, settings, model="seedance-2.0-mini", resolution="720p"
+        )
+        assert auto in {582, 583}
+        assert fen > 400
+        assert auto > 400
+    finally:
+        set_cached_rates(None)
+
+
 def test_gpt_image_uses_tokenfree_per_call_not_kie() -> None:
     """价目 model_price=$0.075 时按账单规则，不再用 Kie 35 分。"""
     settings = get_settings()

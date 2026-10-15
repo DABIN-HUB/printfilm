@@ -21,7 +21,8 @@ from app.services.tokenfree_gateway import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_USD_CNY = 7.0
+# 与 TokenFree 控制台一致；价目 billing_expr 里常见系数含 /7.3
+DEFAULT_USD_CNY = 7.3
 
 
 def usd_cny_rate(settings: Settings | None = None) -> float:

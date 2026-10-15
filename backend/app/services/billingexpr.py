@@ -73,8 +73,11 @@ def quote_verified_charge_fen(
             rate = lookup_rate(mapped)
     if rate is None:
         return None
-    facts = usage if isinstance(usage, dict) else {}
+    facts = dict(usage) if isinstance(usage, dict) else {}
     s = settings or get_settings()
+    # Seedance 等任务表达式读 u("tokens")；调用方只传 total 时补进 usage
+    if (not facts.get("tokens") or float(facts.get("tokens") or 0) <= 0) and int(total or 0) > 0:
+        facts["tokens"] = int(total)
     if rate.billing_mode == "tiered_expr" and rate.billing_expr:
         usd = expression_usd(
             rate.billing_expr,

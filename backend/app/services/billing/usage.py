@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,15 +54,25 @@ async def record_line(
     cost, charge, from_upstream = charge_fen_for_usage(
         total, billing_key, raw_usage=raw, settings=s, model=model
     )
-    if from_upstream or (isinstance(raw, dict) and raw.get("billing_basis") == "official_rule"):
+    # 仅在确有上游 token / quota 时取消「估算」；官方表达式按秒估仍标估算
+    usage_parsed = raw.get("usage") if isinstance(raw, dict) and isinstance(raw.get("usage"), dict) else (
+        raw if isinstance(raw, dict) else {}
+    )
+    real_tok = 0
+    if isinstance(usage_parsed, dict):
+        for key in ("tokens", "total_tokens", "completion_tokens"):
+            try:
+                real_tok = int(usage_parsed.get(key) or 0)
+            except (TypeError, ValueError):
+                real_tok = 0
+            if real_tok > 0:
+                break
+    if from_upstream or real_tok > 0:
         estimated = False
     elif total > 0 and not estimated:
         pass
-    elif total > 0 and estimated and raw:
-        usage_parsed = raw.get("usage") if isinstance(raw.get("usage"), dict) else raw
-        if isinstance(usage_parsed, dict) and int(usage_parsed.get("total_tokens") or 0) > 0:
-            estimated = False
     capability = billing_key_to_capability(billing_key)
+    # 显式写墙钟时间：长任务会话里 server_default=now() 会落成事务起点，用量明细按时间/日期筛会漏看
     ev = UsageEvent(
         user_id=user_id,
         project_id=project_id,
@@ -81,6 +92,7 @@ async def record_line(
         estimated=estimated,
         settled=False,
         raw_usage_json=json.dumps(raw, ensure_ascii=False)[:4000] if raw else None,
+        created_at=datetime.now(UTC),
     )
     db.add(ev)
     await db.flush()

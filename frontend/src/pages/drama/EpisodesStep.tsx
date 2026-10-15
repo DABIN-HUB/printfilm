@@ -113,27 +113,44 @@ export function EpisodesStep({ projectId, onError }: EpisodesStepProps) {
   }
 
   useEffect(() => {
-    async function enter() {
-      setLoading(true)
+    let cancelled = false
+    let timer: number | undefined
+
+    async function enter(initial: boolean) {
+      if (initial) setLoading(true)
       try {
-        if (!seeded.current) {
+        let rows: DramaEpisode[]
+        if (initial && !seeded.current) {
           seeded.current = true
-          await loadEpisodes(false)
+          rows = await loadEpisodes(false)
         } else {
-          setEpisodes(await dramaApi.listEpisodes(projectId))
+          rows = await dramaApi.listEpisodes(projectId)
+          if (!cancelled) setEpisodes(rows)
+        }
+        if (cancelled) return
+        const anyPlanning = rows.some((ep) => readPlanStatus(ep) === 'generating')
+        if (anyPlanning) {
+          timer = window.setTimeout(() => {
+            void enter(false)
+          }, 2500)
         }
       } catch (err) {
-        onError(err instanceof Error ? err.message : '分集加载失败')
+        if (initial) onError(err instanceof Error ? err.message : '分集加载失败')
         try {
-          setEpisodes(await dramaApi.listEpisodes(projectId))
+          const rows = await dramaApi.listEpisodes(projectId)
+          if (!cancelled) setEpisodes(rows)
         } catch {
           /* ignore */
         }
       } finally {
-        setLoading(false)
+        if (initial && !cancelled) setLoading(false)
       }
     }
-    void enter()
+    void enter(true)
+    return () => {
+      cancelled = true
+      if (timer) window.clearTimeout(timer)
+    }
   }, [projectId, onError])
 
   async function handleReseed() {
@@ -265,8 +282,8 @@ export function EpisodesStep({ projectId, onError }: EpisodesStepProps) {
       ) : (
         <div className="drama-episode-grid">
           {episodes.map((ep) => {
-            const planning = planningId === ep.id
             const summary = summarizeEpisode(ep)
+            const planning = planningId === ep.id || summary.planStatus === 'generating'
             const progress =
               summary.fragmentCount > 0
                 ? Math.round((summary.videoDone / summary.fragmentCount) * 100)
@@ -274,14 +291,20 @@ export function EpisodesStep({ projectId, onError }: EpisodesStepProps) {
             const epLabel =
               summary.epNo > 0 ? `第 ${summary.epNo} 集` : `分集 ${ep.id}`
             const statusLabel = planning
-              ? 'AI 分镜中'
-              : summary.videoRunning > 0
-                ? `${summary.videoRunning} 条生成中`
-                : summary.videoFailed > 0
-                  ? `${summary.videoFailed} 条失败`
-                  : summary.videoDone > 0
-                    ? `已出片 ${summary.videoDone}/${summary.fragmentCount}`
-                    : `${summary.fragmentCount} 个分镜`
+              ? 'AI 分镜中…'
+              : summary.planStatus === 'failed'
+                ? '分镜失败'
+                : summary.videoRunning > 0
+                  ? `${summary.videoRunning} 条生成中`
+                  : summary.videoFailed > 0
+                    ? `${summary.videoFailed} 条失败`
+                    : summary.videoDone > 0
+                      ? `已出片 ${summary.videoDone}/${summary.fragmentCount}`
+                      : summary.planStatus === 'completed'
+                        ? `${summary.fragmentCount} 个分镜`
+                        : summary.fragmentCount > 0
+                          ? `${summary.fragmentCount} 个分镜`
+                          : '待 AI 分镜'
 
             return (
               <article
@@ -348,7 +371,7 @@ export function EpisodesStep({ projectId, onError }: EpisodesStepProps) {
                     onClick={() => void handlePlanEpisode(ep)}
                   >
                     <Wand2 size={15} strokeWidth={1.75} aria-hidden />
-                    {planning ? '分镜中…' : 'AI 分镜'}
+                    {planning ? 'AI 分镜中…' : 'AI 分镜'}
                   </button>
                   <button
                     type="button"

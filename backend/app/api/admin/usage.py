@@ -64,6 +64,7 @@ async def list_usage_events(
     domain: str | None = None,
     billing_key: str | None = None,
     capability: str | None = None,
+    model: str | None = None,
     estimated: bool | None = None,
     billing_basis: str | None = None,
     created_from: datetime | None = None,
@@ -73,7 +74,7 @@ async def list_usage_events(
     _admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ) -> AdminUsageEventListOut:
-    """分页列出用量明细，支持用户/任务/领域筛选。"""
+    """分页列出用量明细，支持用户/任务/领域/模型筛选。"""
     owner = aliased(User)
     task = aliased(TaskRun)
     filters = []
@@ -91,6 +92,9 @@ async def list_usage_events(
         filters.append(UsageEvent.billing_key == billing_key.strip())
     if capability and capability.strip():
         filters.append(UsageEvent.capability == capability.strip())
+    model_q = (model or "").strip()
+    if model_q:
+        filters.append(UsageEvent.model.ilike(f"%{model_q}%"))
     if estimated is not None:
         filters.append(UsageEvent.estimated.is_(estimated))
     basis = (billing_basis or "").strip().lower()

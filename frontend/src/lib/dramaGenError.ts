@@ -265,6 +265,15 @@ export function formatDramaGenError(raw: string | null | undefined): DramaGenErr
     }
   }
 
+  // 成片下载被对端掐断（TokenFree content / CDN），不是参考图或脚本问题
+  if (/RemoteProtocolError|peer closed|complete message body|incomplete download/i.test(text)) {
+    return {
+      title: '成片下载中断',
+      message: '视频已在上游生成，但下载到服务器时连接被中断。',
+      suggestion: '请直接重新生成该节点；系统会优先走直链并自动重试下载。',
+    }
+  }
+
   // 浏览器层断连：不是脚本/参考图问题，常因后端热重载或瞬时网络
   if (/failed to fetch|networkerror|load failed|connection reset|连接被重置/i.test(text)) {
     return {

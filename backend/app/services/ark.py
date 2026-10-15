@@ -60,6 +60,7 @@ from app.services.tokenfree_video import (
     normalize_video_task_status,
     prepare_video_create_body,
     remap_video_path,
+    resolve_tokenfree_media_download_url,
     tokenfree_video_content_url,
     unwrap_video_task_payload,
     uses_tokenfree_video,
@@ -298,6 +299,24 @@ def _retry_after_seconds(resp: httpx.Response, default: float) -> float:
     return default
 
 
+# 从任务 payload 提取 New API quota（单次消耗，不是账户余额）
+def _extract_task_quota(payload: dict[str, Any], usage: dict[str, Any] | None) -> int | None:
+    for block in (usage or {}, payload):
+        if not isinstance(block, dict):
+            continue
+        for key in ("quota", "quota_consumed", "consumed_quota"):
+            raw = block.get(key)
+            if raw is None:
+                continue
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+    return None
+
+
 # 从 Seedance / New API 任务查询响应解析状态、媒体 URL 与官方 usage
 def _build_task_result_from_payload(data: dict[str, Any]) -> TaskResult:
     payload = unwrap_video_task_payload(data)
@@ -305,7 +324,48 @@ def _build_task_result_from_payload(data: dict[str, Any]) -> TaskResult:
     usage_parsed = parse_usage_dict(payload)
     total_tokens = int(usage_parsed.get("total_tokens") or 0)
     completion_tokens = int(usage_parsed.get("completion_tokens") or 0)
+    # usage 为空对象时 parse 会得到 0；再扫顶层字段（部分网关只在顶层回 completion_tokens）
+    if total_tokens <= 0 and completion_tokens <= 0:
+        for key in ("completion_tokens", "total_tokens", "output_tokens"):
+            try:
+                n = int(payload.get(key) or 0)
+            except (TypeError, ValueError):
+                n = 0
+            if n > 0:
+                if key == "completion_tokens" or key == "output_tokens":
+                    completion_tokens = n
+                total_tokens = max(total_tokens, n)
+                break
     raw_usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else None
+    if not raw_usage and (total_tokens > 0 or completion_tokens > 0):
+        raw_usage = {
+            "total_tokens": total_tokens,
+            "completion_tokens": completion_tokens or total_tokens,
+        }
+    elif isinstance(raw_usage, dict) and total_tokens > 0:
+        # 空 usage {} 补齐，避免下游当成「无用量」
+        merged = dict(raw_usage)
+        merged.setdefault("total_tokens", total_tokens)
+        if completion_tokens > 0:
+            merged.setdefault("completion_tokens", completion_tokens)
+        raw_usage = merged
+
+    # New API 任务级 quota → 上游成本（分），供结算优先对齐 TokenFree 账单
+    upstream_cost_fen: int | None = None
+    quota = _extract_task_quota(payload, raw_usage if isinstance(raw_usage, dict) else None)
+    if quota is not None:
+        from app.services.tokenfree_usage import quota_to_cost_fen
+
+        cost = quota_to_cost_fen(quota)
+        if cost > 0:
+            upstream_cost_fen = cost
+            merged_usage = dict(raw_usage or {})
+            merged_usage["quota"] = quota
+            merged_usage["cost_fen"] = cost
+            if total_tokens > 0:
+                merged_usage.setdefault("total_tokens", total_tokens)
+                merged_usage.setdefault("tokens", total_tokens)
+            raw_usage = merged_usage
 
     if status == "succeeded":
         return TaskResult(
@@ -315,6 +375,7 @@ def _build_task_result_from_payload(data: dict[str, Any]) -> TaskResult:
             total_tokens=total_tokens,
             completion_tokens=completion_tokens,
             raw_usage=raw_usage,
+            upstream_cost_fen=upstream_cost_fen,
         )
     if status == "failed":
         err = payload.get("error") or payload.get("message") or payload.get("fail_reason") or "failed"
@@ -324,12 +385,14 @@ def _build_task_result_from_payload(data: dict[str, Any]) -> TaskResult:
             total_tokens=total_tokens,
             completion_tokens=completion_tokens,
             raw_usage=raw_usage,
+            upstream_cost_fen=upstream_cost_fen,
         )
     return TaskResult(
         status="running",
         total_tokens=total_tokens,
         completion_tokens=completion_tokens,
         raw_usage=raw_usage,
+        upstream_cost_fen=upstream_cost_fen,
     )
 
 
@@ -405,6 +468,23 @@ def _format_seedance_create_error(
             f"参考音频过短：{who}，Seedance 要求时长 ≥ 1.8 秒。"
             "请打开对应角色/旁白，重新生成或上传更长的试听音频后再生成该分镜。"
         )
+    # Seedance 2.0 输出时长仅 4–15s；2.5 为 4–30s
+    if re.search(r"parameter\s+duration.*not valid|duration.*not valid for model", text, re.I):
+        if re.search(r"seedance-2-0|seedance-2\.0|doubao-seedance-2-0", text, re.I):
+            return "成片时长超出 Seedance 2.0 允许范围（4–15 秒），请缩短到 15 秒以内后重试"
+        return "成片时长参数无效，请按当前模型允许范围调整后重试"
+    # TokenFree New API：分组下无 distributor
+    if (
+        "model_not_found" in text
+        or "无可用渠道" in text
+        or ("distributor" in text.lower() and "seedance" in text.lower())
+    ):
+        if re.search(r"seedance-2\.5|seedance-2-5", text, re.I):
+            return (
+                "当前 TokenFree 账号未开通 Seedance 2.5（分组 default 无可用渠道）。"
+                "请改用 Seedance 2.0，或在 TokenFree 控制台为 default 分组配置 2.5 渠道后再试"
+            )
+        return "上游未开通该视频模型渠道，请更换模型或在 TokenFree 控制台检查分组配置后重试"
     return f"Seedance create error {status_code}: {text}"
 
 
@@ -510,13 +590,31 @@ class ArkGateway:
         return result
 
     async def download_result_media(self, url: str, dest: Path) -> None:
-        """下载生成媒体；TokenFree 任务/content URL 带 Bearer，读超时放宽。"""
-        headers = None
+        """下载生成媒体；TokenFree content 优先跟 302 直链，失败自动重试。"""
+        headers: dict[str, str] | None = None
         timeout: float | httpx.Timeout = 300.0
-        if is_tokenfree_content_url(url) or is_tokenfree_image_url(url):
-            headers = {"Authorization": f"Bearer {self._ark_api_key()}"}
+        download_url = (url or "").strip()
+        if is_tokenfree_content_url(download_url) or is_tokenfree_image_url(download_url):
+            api_key = self._ark_api_key()
+            headers = {"Authorization": f"Bearer {api_key}"}
             timeout = httpx.Timeout(connect=30.0, read=600.0, write=60.0, pool=30.0)
-        await storage.download_to(url, dest, headers=headers, timeout=timeout)
+            if is_tokenfree_content_url(download_url):
+                resolved = await resolve_tokenfree_media_download_url(download_url, api_key=api_key)
+                if resolved and resolved != download_url:
+                    logger.info(
+                        "TokenFree content 改走直链 %s -> %s",
+                        download_url[:96],
+                        resolved[:140],
+                    )
+                    download_url = resolved
+                    headers = None  # TOS/CDN 签名直链无需 Bearer
+        await storage.download_to(
+            download_url,
+            dest,
+            headers=headers,
+            timeout=timeout,
+            retries=4,
+        )
 
     async def chat_storyboard(
         self,
@@ -1204,7 +1302,11 @@ class ArkGateway:
                 }
             )
         route = self._resolve_ark_route("video", self.settings.model_video)
-        video_model = route.upstream_model if route else self.settings.model_video
+        from app.services.tokenfree_pricing import canonicalize_channel_model_id
+
+        video_model = canonicalize_channel_model_id(
+            route.upstream_model if route else self.settings.model_video
+        )
         body: dict[str, Any] = {
             "model": video_model,
             "content": content,
@@ -1545,6 +1647,18 @@ class ArkGateway:
                 data = resp.json()
                 result = self._finalize_video_result(_build_task_result_from_payload(data), task_id)
                 if result.status == "succeeded":
+                    # TokenFree 偶发先回成功、usage/quota 稍后才到；短等补齐避免按估算低扣
+                    if int(result.total_tokens or 0) <= 0 and not result.upstream_cost_fen:
+                        for _ in range(3):
+                            await asyncio.sleep(1.5)
+                            try:
+                                refreshed = await self.fetch_task_once(task_id)
+                            except Exception:  # noqa: BLE001
+                                break
+                            if refreshed.status == "failed":
+                                return refreshed
+                            if int(refreshed.total_tokens or 0) > 0 or refreshed.upstream_cost_fen:
+                                return refreshed
                     return result
                 if result.status == "failed":
                     return result

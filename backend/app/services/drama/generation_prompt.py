@@ -92,7 +92,36 @@ def append_style_prompt(
     return f"{prompt}。画面风格要求：{style_prompt}{board_hint}"
 
 
-# 按资产类型与风格 ID 组装完整 Seedream 提示词
+_STRUCTURE_PREFIX_BY_KIND: dict[str, str] = {
+    "character": CHARACTER_PROMPT_PREFIX,
+    "scene": SCENE_PROMPT_PREFIX,
+    "prop": PROP_PROMPT_PREFIX,
+    "material": MATERIAL_PROMPT_PREFIX,
+    "none": MATERIAL_PROMPT_PREFIX,
+    "image": IMAGE_PROMPT_PREFIX,
+}
+
+# 提示词正文是否已含设定板/构图强制任务（避免重复拼接）
+def prompt_has_structure_prefix(prompt: str) -> bool:
+    text = prompt or ""
+    return "【强制任务：" in text or "全身三视图" in text or "完整三视图" in text
+
+
+# 将三视图等结构前缀写入提示词正文（供提示词框展示；提交时不再静默携带）
+def ensure_structure_in_prompt(user_prompt: str, asset_type: str | None = None) -> str:
+    trimmed = (user_prompt or "").strip()
+    if not trimmed:
+        return trimmed
+    if prompt_has_structure_prefix(trimmed):
+        return trimmed
+    kind = (asset_type or "").strip().lower()
+    prefix = _STRUCTURE_PREFIX_BY_KIND.get(kind)
+    if not prefix:
+        return trimmed
+    return f"{prefix}{trimmed}"
+
+
+# 按资产类型与风格 ID 组装 Seedream 提交提示词（结构前缀须已在正文中，此处只追加风格）
 def build_generation_prompt(
     user_prompt: str,
     asset_type: str | None = None,
@@ -101,21 +130,8 @@ def build_generation_prompt(
     has_style_board: bool = False,
 ) -> str:
     trimmed = (user_prompt or "").strip()
-    prompt = trimmed
     kind = (asset_type or "").strip().lower()
-    structure_locked = False
-    if kind == "character":
-        prompt = f"{CHARACTER_PROMPT_PREFIX}{trimmed}"
-        structure_locked = True
-    elif kind == "scene":
-        prompt = f"{SCENE_PROMPT_PREFIX}{trimmed}"
-    elif kind == "prop":
-        prompt = f"{PROP_PROMPT_PREFIX}{trimmed}"
-        structure_locked = True
-    elif kind in {"material", "none"}:
-        prompt = f"{MATERIAL_PROMPT_PREFIX}{trimmed}"
-    elif kind == "image":
-        prompt = f"{IMAGE_PROMPT_PREFIX}{trimmed}"
+    structure_locked = kind in {"character", "prop"} and prompt_has_structure_prefix(trimmed)
     return append_style_prompt(
-        prompt, style_id, structure_locked=structure_locked, has_style_board=has_style_board
+        trimmed, style_id, structure_locked=structure_locked, has_style_board=has_style_board
     )

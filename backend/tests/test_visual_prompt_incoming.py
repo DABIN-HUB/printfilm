@@ -32,12 +32,14 @@ async def test_incoming_prompt_beats_stored_visual_prompt():
     resolved = await resolve_visual_prompt_for_asset(asset, project, incoming)
     assert "数学老师" in resolved
     assert "十七八岁" not in resolved
-    assert resolved == incoming
+    # 解析即拼上设定板前缀（写入提示词正文，非生图后回写）
+    assert resolved.startswith("【强制任务：角色设定板构图】")
+    assert resolved.endswith(incoming) or incoming in resolved
 
 
 @pytest.mark.asyncio
 async def test_no_incoming_keeps_strong_stored_prompt():
-    """未传新文案时，仍可复用库内已有完整 visualPrompt。"""
+    """未传新文案时，仍可复用库内已有完整 visualPrompt（并补设定板前缀）。"""
     project = DramaProject(id=1, user_id=1, title="t", params={})
     stored = (
         "外貌：约十七八岁，脸型清瘦偏长，眉骨微微隆起，未展开的长眉，窄长眼眶微凸，"
@@ -53,7 +55,8 @@ async def test_no_incoming_keeps_strong_stored_prompt():
         params={"visualPrompt": stored},
     )
     resolved = await resolve_visual_prompt_for_asset(asset, project, None)
-    assert resolved == stored
+    assert stored in resolved
+    assert resolved.startswith("【强制任务：角色设定板构图】")
 
 
 @pytest.mark.asyncio

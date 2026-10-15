@@ -125,6 +125,13 @@ export function getEpisodeContentStatus(script: DramaScript | null | undefined):
   return String((script?.params || {}).episode_content_status || 'pending')
 }
 
+// 读取项目资产抽取状态（整剧摘要后 / 分集后）
+export function getAssetsSeedStatus(
+  project: DramaProject | null | undefined,
+): string {
+  return String((project?.params as Record<string, unknown> | undefined)?.assets_seed_status || '')
+}
+
 // 读取画面风格 ID
 export function getImageStyleId(
   script: DramaScript | null | undefined,

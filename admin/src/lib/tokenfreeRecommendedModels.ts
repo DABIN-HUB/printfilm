@@ -2,7 +2,7 @@ export type ModelCapability = "text" | "image" | "video" | "audio";
 
 export type PresetModelOption = { id: string; label: string };
 
-/** 与后端 media_model_presets.PRESET_MODELS 对齐 */
+/** 与后端 media_model_presets.PRESET_MODELS 对齐（TokenFree 点分 id） */
 export const PRESET_MODELS: Record<ModelCapability, PresetModelOption[]> = {
   text: [
     { id: "kimi-k2.6", label: "Kimi K2.6" },
@@ -10,16 +10,19 @@ export const PRESET_MODELS: Record<ModelCapability, PresetModelOption[]> = {
     { id: "gpt-5.5", label: "GPT 5.5" },
   ],
   image: [
-    { id: "seedream-5-0-pro", label: "Seedream 5.0 Pro" },
+    { id: "seedream-5.0-pro", label: "Seedream 5.0 Pro" },
+    { id: "seedream-5.0", label: "Seedream 5.0" },
+    { id: "seedream-5.0-flash", label: "Seedream 5.0 Flash" },
     { id: "gpt-image-2", label: "GPT Image 2" },
   ],
   video: [
-    { id: "seedance-2-0", label: "Seedance 2.0" },
-    { id: "seedance-2-0-mini", label: "Seedance 2.0 Mini" },
-    { id: "seedance-2-5", label: "Seedance 2.5" },
+    { id: "seedance-2.5", label: "Seedance 2.5" },
+    { id: "seedance-2.0", label: "Seedance 2.0" },
+    { id: "seedance-2.0-fast", label: "Seedance 2.0 Fast" },
+    // mini：TokenFree→Ark 未开通，暂不下发
     { id: "MiniMax-H3", label: "MiniMax H3" },
   ],
-  audio: [{ id: "gemini-3.1-flash-tts", label: "Gemini 3.1 Flash TTS" }],
+  audio: [{ id: "qwen-tts-2025-05-22", label: "Qwen TTS" }],
 };
 
 export const CAPABILITY_ORDER: ModelCapability[] = ["text", "image", "video", "audio"];
@@ -48,18 +51,25 @@ export function allPresetChannelModels(): string[] {
 
 /** 历史友好别名 → 预设规范 id（与后端 PRESET_MODEL_ALIASES 对齐） */
 const PRESET_MODEL_ALIASES: Record<string, string> = {
-  "seedance-2.5": "seedance-2-5",
-  "seedance2.5": "seedance-2-5",
-  "seedance-2": "seedance-2-0",
-  seedance2: "seedance-2-0",
-  "seedance-2.0": "seedance-2-0",
-  "seedance2.0": "seedance-2-0",
-  "seedream-5.0": "seedream-5-0-pro",
-  "seedream-5": "seedream-5-0-pro",
-  "seedream5.0": "seedream-5-0-pro",
-  seedream5: "seedream-5-0-pro",
+  "seedance-2-5": "seedance-2.5",
+  "seedance2.5": "seedance-2.5",
+  "seedance-2": "seedance-2.0",
+  seedance2: "seedance-2.0",
+  "seedance-2-0": "seedance-2.0",
+  "seedance2.0": "seedance-2.0",
+  "seedance-2-0-mini": "seedance-2.0",
+  "seedance-2.0-mini": "seedance-2.0",
+  "doubao-seedance-2-0-mini-260615": "seedance-2.0",
+  "seedance-2-0-fast": "seedance-2.0-fast",
+  "seedream-5-0-pro": "seedream-5.0-pro",
+  "seedream-5-0": "seedream-5.0",
+  "seedream-5": "seedream-5.0",
+  "seedream5.0": "seedream-5.0",
+  seedream5: "seedream-5.0",
+  "seedream-5-0-flash": "seedream-5.0-flash",
   "gpt-image-2-5": "gpt-image-2",
   "gpt-image-2.5": "gpt-image-2",
+  "gemini-3.1-flash-tts": "qwen-tts-2025-05-22",
 };
 
 function resolvePresetAlias(modelId: string): string {

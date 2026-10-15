@@ -350,11 +350,20 @@ async def settle_deferred_video_poll(
                     completion_tokens=int(completion_tokens or usage_tokens),
                     raw_usage=raw_usage,
                 )
+            from app.services.tokenfree_pricing import canonicalize_channel_model_id
+
+            raw_billing = str(payload.get("model_id") or payload.get("model") or "").strip()
+            if raw_billing:
+                billing_model = canonicalize_channel_model_id(raw_billing) or raw_billing
+            else:
+                billing_model = canonicalize_channel_model_id(
+                    str(get_settings().model_video or "").strip()
+                ) or "seedance-2.5"
             await record_seedance_video_usage(
                 db,
                 user_id=user.id,
                 billing_key=key,
-                model=get_settings().model_video,
+                model=billing_model,
                 domain=task.domain or "api",
                 task_result=task_result,
                 fallback_duration_sec=payload.get("duration"),

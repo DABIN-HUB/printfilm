@@ -118,7 +118,8 @@ class Settings(BaseSettings):
     # Kie：1 credit 折合人民币分（约 $0.005 ≈ ¥0.035 → 3.5）
     billing_kie_fen_per_credit: float = 3.5
     # TokenFree / New API：quota→USD→人民币（500000 quota = 1 USD）
-    billing_usd_cny: float = 7.0
+    # 与 TokenFree / New API 控制台一致（价目表达式里常见 /7.3 折美元）
+    billing_usd_cny: float = 7.3
     # Fallback tokens when API omits usage
     billing_est_llm_tokens: int = 80_000
     # Seedream / gpt-image 无 quota 时按张价结算，不再用 4.5 万 token × 8 元/百万

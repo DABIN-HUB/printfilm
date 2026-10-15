@@ -265,7 +265,11 @@ function EpisodeEditInner() {
       }),
     [selected, assets],
   )
-  // selectedGateIssues 当前镜脚本/资产门禁（编辑区即时提示）
+  // selectedGateBlocking / selectedGateIssues 当前镜脚本/资产门禁
+  const selectedGateBlocking = useMemo(
+    () => collectDramaGenerateGateIssues(selected, assets).blocking,
+    [selected, assets],
+  )
   const selectedGateIssues = useMemo(() => {
     const { blocking, warnings } = collectDramaGenerateGateIssues(selected, assets)
     return [...blocking, ...warnings]
@@ -317,8 +321,12 @@ function EpisodeEditInner() {
     return '上一镜仍在生成，本镜将入队等待上一镜完成后再开始'
   }, [linkLastFrame, selectedIndex, fragments, generatingIds])
 
-  // selectedGenerateLocked 仅锁当前镜的「生成」按钮（含尾帧衔接门禁）
-  const selectedGenerateLocked = busy || selectedIsGenerating || Boolean(continuityBlockedReason)
+  // selectedGenerateLocked 锁当前镜「生成」：忙/生成中/衔接/缺参考图等硬门禁
+  const selectedGenerateLocked =
+    busy ||
+    selectedIsGenerating ||
+    Boolean(continuityBlockedReason) ||
+    selectedGateBlocking.length > 0
 
   // 持久化镜间衔接开关到项目 params，并让后端重排未开始任务
   async function handleLinkLastFrameChange(enabled: boolean) {
@@ -649,7 +657,7 @@ function EpisodeEditInner() {
       const ep = await dramaApi.getEpisode(eid)
       if (readFragmentPlanStatus(ep) === 'generating') {
         setBusy(true)
-        setStatus('AI 分镜规划中…')
+        setStatus('等待生成…')
         const started = Date.now()
         while (Date.now() - started < 10 * 60 * 1000) {
           await new Promise((r) => setTimeout(r, 2500))
@@ -659,7 +667,7 @@ function EpisodeEditInner() {
             setEpisode(cur)
             setFragments(cur.fragments || [])
             setSelectedIndex(0)
-            setStatus(`AI 分镜完成 · ${(cur.fragments || []).length} 条`)
+            setStatus(`分镜完成 · ${(cur.fragments || []).length} 条`)
             setBusy(false)
             return
           }
@@ -668,6 +676,7 @@ function EpisodeEditInner() {
             setBusy(false)
             return
           }
+          setStatus('等待生成…')
         }
         setBusy(false)
         return
@@ -886,7 +895,17 @@ function EpisodeEditInner() {
       return
     }
     if (selectedGenerateLocked) {
-      if (continuityBlockedReason) {
+      if (selectedGateBlocking.length > 0) {
+        setError(selectedGateBlocking.map((i) => i.message).join('；'))
+        await dialog.alert({
+          title: '无法生成',
+          message: formatDramaGateMessage(
+            selectedGateBlocking,
+            [],
+            '请先为关联角色/场景/道具生成或上传参考图。',
+          ),
+        })
+      } else if (continuityBlockedReason) {
         setError(continuityBlockedReason)
         await dialog.alert({
           title: '无法生成',
@@ -1144,7 +1163,7 @@ function EpisodeEditInner() {
     setPlanModalOpen(false)
     setBusy(true)
     setError('')
-    setStatus('AI 分镜规划中…')
+    setStatus('等待生成…')
     try {
       await dramaApi.planEpisodeFragments(eid, {
         force: true,
@@ -1170,7 +1189,7 @@ function EpisodeEditInner() {
           setStatus(
             mode === 'rules_fallback'
               ? `分镜完成（模型失败已回退规则切分）· ${count} 条`
-              : `AI 分镜完成 · ${count} 条`,
+              : `分镜完成 · ${count} 条`,
           )
           setBusy(false)
           return
@@ -1181,7 +1200,7 @@ function EpisodeEditInner() {
           setBusy(false)
           return
         }
-        setStatus('AI 分镜规划中…')
+        setStatus('等待生成…')
       }
       throw new Error('AI 分镜超时，请稍后刷新查看')
     } catch (err) {
@@ -1446,7 +1465,9 @@ function EpisodeEditInner() {
             disabled={planFragmentsLocked}
             onClick={() => void planFragmentsWithLlm()}
           >
-            {busy && status.includes('分镜') ? '分镜中…' : 'AI 重新分镜'}
+            {busy && (status.includes('分镜') || status.includes('等待生成'))
+              ? '等待生成…'
+              : 'AI 重新分镜'}
           </button>
           {/* 一键生成：暂时隐藏，恢复时去掉 false && */}
           {false && (
@@ -1631,6 +1652,7 @@ function EpisodeEditInner() {
                   className="drama-ep-btn-dark"
                   disabled={selectedGenerateLocked || !selected}
                   title={
+                    selectedGateBlocking[0]?.message ||
                     continuityBlockedReason ||
                     continuityQueueHint ||
                     (selectedIsGenerating ? '当前分镜正在生成' : undefined)
@@ -1641,13 +1663,15 @@ function EpisodeEditInner() {
                     ? '生成中…'
                     : busy
                       ? '处理中…'
-                      : continuityQueueHint
-                        ? '排队生成'
-                        : continuityBlockedReason
-                          ? '待上一镜'
-                          : selectedHasVideo
-                          ? '重新生成'
-                          : '生成'}
+                      : selectedGateBlocking.length > 0
+                        ? '先补参考图'
+                        : continuityQueueHint
+                          ? '排队生成'
+                          : continuityBlockedReason
+                            ? '待上一镜'
+                            : selectedHasVideo
+                              ? '重新生成'
+                              : '生成'}
                 </button>
               </>
             )}

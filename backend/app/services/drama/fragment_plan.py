@@ -25,7 +25,9 @@ from app.services.drama.build_fragments import (
     build_character_binding,
     build_summary_character_lookup,
     _bindings_mentioned_in_text,
+    split_episode_content_into_scenes,
 )
+from app.services.drama.agents import MIN_EPISODE_CONTENT_CHARS
 from app.services.seedance_segments import is_production_meta_line
 from app.services.drama.fragment_asset_limit import (
     FRAGMENT_MAX_CHARACTERS,
@@ -561,6 +563,29 @@ def normalize_llm_fragment_items(
     return drafts
 
 
+def llm_fragment_coverage_insufficient(episode_body: str, drafts: list[dict[str, Any]]) -> bool:
+    """
+    长正文/多场剧本若镜数盖不住场次，视为敷衍，应回退规则切分。
+    短正文单场允许 1 镜；多场至少每场一镜。不设整集镜数上限。
+    """
+    body = (episode_body or "").strip()
+    if not body:
+        return False
+    compact = re.sub(r"\s+", "", body)
+    scenes = split_episode_content_into_scenes(body)
+    n = len(drafts)
+    # 多场：至少一场一镜
+    if len(scenes) >= 2 and n < len(scenes):
+        return True
+    if n >= 2:
+        return False
+    if len(scenes) >= 2:
+        return True
+    if len(compact) >= MIN_EPISODE_CONTENT_CHARS:
+        return True
+    return False
+
+
 async def plan_fragments_with_llm(
     *,
     episode_name: str,
@@ -646,6 +671,10 @@ async def plan_fragments_with_llm(
     if not drafts:
         raise RuntimeError("LLM 分镜规范化后为空")
     drafts = trim_episode_fragment_drafts(drafts)
+    if llm_fragment_coverage_insufficient(episode_body, drafts):
+        raise RuntimeError(
+            f"LLM 分镜过少（{len(drafts)} 条），无法覆盖本集多场/长正文，将回退规则切分"
+        )
     logger.info(
         "LLM 分镜完成 episode=%s ep_no=%s fragments=%s introduced_before=%s locked=%s",
         episode_name,

@@ -183,13 +183,14 @@ def charge_fen_for_usage(
     生图无 quota 时：按张官方价，避免 8 元/百万 token 低估约十倍。
     """
     s = settings or get_settings()
-    # 视频按清晰度 × 时长。只有响应里带了 New API quota 时才改用账单额度。
+    # 视频：优先官方表达式（常按 tokens）或清晰度×时长；有 New API quota 时走账单额度。
     if not _raw_has_newapi_quota(raw_usage):
         video_fen, video_basis = _video_resolution_duration_fen(
             billing_key,
             raw_usage=raw_usage,
             settings=s,
             model=model,
+            tokens=tokens,
         )
         if video_fen is not None and video_fen > 0:
             if video_basis and isinstance(raw_usage, dict):
@@ -242,9 +243,21 @@ def _usage_block(raw_usage: dict[str, Any] | None) -> dict[str, Any]:
         "image_count",
         "results",
         "tier",
+        "tokens",
+        "total_tokens",
     ):
         if raw_usage.get(key) is not None and merged.get(key) is None:
             merged[key] = raw_usage.get(key)
+    # 统一给表达式 u("tokens") 用
+    if not merged.get("tokens"):
+        for key in ("total_tokens", "completion_tokens"):
+            try:
+                n = int(merged.get(key) or 0)
+            except (TypeError, ValueError):
+                n = 0
+            if n > 0:
+                merged["tokens"] = n
+                break
     return merged
 
 
@@ -277,15 +290,15 @@ def _fact_seconds(facts: dict[str, Any]) -> float:
     return 0.0
 
 
-def _video_has_duration_expr(model: str) -> bool:
-    """价目表达式是否按秒计价。"""
+def _video_has_official_expr(model: str) -> bool:
+    """价目是否有可核实的视频表达式（秒或 tokens）。"""
     from app.services.tokenfree_pricing import canonicalize_channel_model_id, lookup_rate
 
     rate = lookup_rate(model)
     if rate is None:
         mapped = canonicalize_channel_model_id(model)
         rate = lookup_rate(mapped) if mapped else None
-    return bool(rate and rate.billing_expr and "seconds" in rate.billing_expr)
+    return bool(rate and rate.billing_expr)
 
 
 def _video_resolution_duration_fen(
@@ -294,8 +307,9 @@ def _video_resolution_duration_fen(
     raw_usage: dict[str, Any] | None,
     settings: Settings,
     model: str,
+    tokens: int = 0,
 ) -> tuple[int | None, str]:
-    """视频实扣：该清晰度的秒价 × 时长。没有片长时返回 (None, '')。"""
+    """视频实扣：官方表达式（tokens/秒）或清晰度秒价 × 时长。没有片长时返回 (None, '')。"""
     if not _is_video_billing(billing_key, model):
         return None, ""
     facts = _usage_block(raw_usage)
@@ -305,10 +319,21 @@ def _video_resolution_duration_fen(
     from app.services.tokenfree_pricing import charge_fen_official_video, normalize_video_resolution
 
     resolution = normalize_video_resolution(str(facts.get("resolution") or ""), settings)
-    fen = charge_fen_official_video(seconds, settings, model=model, resolution=resolution)
+    try:
+        usage_tokens = int(facts.get("tokens") or 0)
+    except (TypeError, ValueError):
+        usage_tokens = 0
+    tok = usage_tokens or int(tokens or 0)
+    fen = charge_fen_official_video(
+        seconds,
+        settings,
+        model=model,
+        resolution=resolution,
+        tokens=tok if tok > 0 else None,
+    )
     if fen <= 0:
         return None, ""
-    basis = "official_rule" if _video_has_duration_expr(model) else ""
+    basis = "official_rule" if _video_has_official_expr(model) else ""
     return fen, basis
 
 
@@ -361,7 +386,11 @@ def _verified_rule_fen(
 
 
 def _catalog_image_fen_if_per_call(settings: Settings, model: str, *, size: str = "") -> int | None:
-    """gpt-image / Seedream 按张价；token 计价模型返回 None。"""
+    """gpt-image / Seedream 按张价。
+
+    Seedream 在 TokenFree 价目里常标成 token/表达式，但 /responses 经常回 0 token；
+    此时仍走官方生图价（images_* 表达式或保底），禁止落到 0 元。
+    """
     from app.services.tokenfree_image import is_seedream_family, tokenfree_working_image_model
     from app.services.tokenfree_pricing import charge_fen_official_image, lookup_rate, resolve_billing_image_size
 
@@ -370,12 +399,15 @@ def _catalog_image_fen_if_per_call(settings: Settings, model: str, *, size: str 
     if not mid:
         mid = "gpt-image-2"
     rate = lookup_rate(mid)
-    if rate and rate.billing == "token":
+    # 纯 token 模型（非 Seedream 族）无 token 时不要误用按张表
+    if rate and rate.billing == "token" and not (
+        is_seedream_family(raw) or "seedream" in mid.lower()
+    ):
         return None
     resolved = resolve_billing_image_size(settings, model=raw, size=size)
     if rate and rate.billing == "per_call" and rate.cny_per_call > 0:
         return charge_fen_official_image(settings, model=mid, size=resolved)
-    if is_seedream_family(raw) or "gpt-image" in mid.lower():
+    if is_seedream_family(raw) or "gpt-image" in mid.lower() or "seedream" in mid.lower():
         return charge_fen_official_image(settings, model=mid, size=resolved)
     return None
 

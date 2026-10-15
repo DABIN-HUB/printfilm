@@ -40,7 +40,6 @@ from app.services.drama.build_fragments import prepare_fragment_content
 from app.services.drama.generation_prompt import append_style_prompt, build_generation_prompt
 from app.services.drama.image_styles import resolve_image_style_board_url
 from app.services.drama.seedream_options import resolve_seedream_model_endpoint, resolve_seedream_size
-from app.services.drama.visual_prompt import resolve_visual_prompt_for_asset
 from app.services.drama.voice_synthesis import build_voice_sample_text, synthesize_voice_asset
 from app.services.drama.voice_prompt import fallback_voice_prompt
 from app.services.drama.voice_reference_audio import (
@@ -837,9 +836,10 @@ async def ensure_fragment_reference_images(
     ref_assets: list[DramaAsset] | None = None,
 ) -> list[DramaAsset]:
     """
-    分镜视频生成前：收集引用资产，对缺图的角色/场景/道具动态 Seedream 生图。
-    返回刷新后的参考资产列表（含正文 @asset 与引用表）。
+    分镜视频生成前：收集引用资产；缺参考图（生成或上传均可）则直接拒绝，不再自动补图。
+    返回已就绪的参考资产列表（含正文 @asset 与引用表）。
     """
+    _ = user  # 签名兼容调用方；缺图时不再代用户生图
     # collected_ids 引用表 + 正文 @asset
     collected_ids: list[int] = []
     seen: set[int] = set()
@@ -881,26 +881,12 @@ async def ensure_fragment_reference_images(
     )
     ordered = [assets_by_id[i] for i in collected_ids if i in assets_by_id]
     missing = [a for a in ordered if asset_needs_reference_image(a)]
-    if not missing:
-        return ordered
-
-    logger.info(
-        "分镜缺图资产动态生成 fragment_id=%s count=%s ids=%s",
-        fragment.id,
-        len(missing),
-        [a.id for a in missing],
-    )
-    await _set_fragment_generation(
-        db,
-        fragment,
-        {
-            "status": "running",
-            "phase": "assets",
-            "message": f"正在生成参考图 0/{len(missing)}",
-            "assets_total": len(missing),
-            "assets_done": 0,
-        },
-    )
+    if missing:
+        names = [(a.name or "").strip() or f"#{a.id}" for a in missing]
+        shown = "、".join(names[:5])
+        if len(names) > 5:
+            shown += "…"
+        raise RuntimeError(f"以下关联资产缺少参考图，请先生成或上传后再生成视频：{shown}")
 
     # 补齐正文提到但引用表没有的关联
     existing_ref_ids = {ref.asset_id for ref in refs}
@@ -913,55 +899,7 @@ async def ensure_fragment_reference_images(
         existing_ref_ids.add(asset.id)
     await db.flush()
 
-    for index, asset in enumerate(missing):
-        try:
-            prompt = await resolve_visual_prompt_for_asset(asset, project, db=db)
-        except Exception:  # noqa: BLE001
-            prompt = read_asset_visual_prompt(asset)
-        if not (prompt or "").strip():
-            prompt = read_asset_visual_prompt(asset)
-        await _set_fragment_generation(
-            db,
-            fragment,
-            {
-                "status": "running",
-                "phase": "assets",
-                "message": f"正在生成参考图 {index + 1}/{len(missing)}：{asset.name or asset.id}",
-                "assets_total": len(missing),
-                "assets_done": index,
-                "asset_id": asset.id,
-            },
-        )
-        updated = await generate_asset_image(
-            db,
-            user,
-            project,
-            prompt,
-            asset=asset,
-            name=asset.name,
-            kind=(asset.type or "character"),
-            image_style_id=str((project.params or {}).get("image_style_id") or "") or None,
-        )
-        assets_by_id[updated.id] = updated
-        logger.info(
-            "分镜参考图已补齐 fragment_id=%s asset_id=%s url=%s",
-            fragment.id,
-            updated.id,
-            (updated.cover or updated.url or "")[:80],
-        )
-
-    await _set_fragment_generation(
-        db,
-        fragment,
-        {
-            "status": "running",
-            "phase": "video",
-            "message": "参考图已就绪，开始生成视频",
-            "assets_total": len(missing),
-            "assets_done": len(missing),
-        },
-    )
-    return [assets_by_id[i] for i in collected_ids if i in assets_by_id]
+    return ordered
 
 
 async def ensure_reference_assets_public_urls(
@@ -1292,8 +1230,12 @@ async def generate_asset_image(
     size = resolve_seedream_size(aspect_ratio=ratio, resolution=res, model_id=model)
     # board 风格封面的公网 URL；没有栅格图时仍只靠提示词
     board = resolve_image_style_board_url(style_id)
+    # 三视图等须在「生成提示词」时已写入框内；此处只追加风格，不回写结构前缀
     full_prompt = build_generation_prompt(
-        prompt, asset_type=kind, style_id=style_id, has_style_board=bool(board)
+        prompt,
+        asset_type=kind,
+        style_id=style_id,
+        has_style_board=bool(board),
     )
 
     logger.info(
@@ -1346,8 +1288,10 @@ async def generate_asset_image(
 
     finished_at = datetime.now(timezone.utc).isoformat()
     # gen_meta 写入资产 params，便于前端回显上次选项；同事务标记 done 以便轮询立刻换图
+    # visualPrompt 以调用方（提示词框 / 已解析文案）为准，生图后不再拼接结构前缀回写
+    stored_prompt = (prompt or "").strip()
     gen_meta = {
-        "prompt": prompt,
+        "prompt": stored_prompt,
         "image_style_id": style_id,
         "model_id": model_id or "seedream-5-0-pro",
         "aspect_ratio": ratio,
@@ -1370,7 +1314,10 @@ async def generate_asset_image(
             name=name or "未命名资产",
             cover=url,
             url=url,
-            params=gen_meta,
+            params={
+                **gen_meta,
+                **({"visualPrompt": stored_prompt, "visualImage": stored_prompt} if stored_prompt else {}),
+            },
         )
         db.add(asset)
     else:
@@ -1384,10 +1331,10 @@ async def generate_asset_image(
         archived_versions = (asset.params or {}).get("image_versions") if isinstance(asset.params, dict) else None
         if isinstance(archived_versions, list):
             params["image_versions"] = archived_versions
-        if prompt.strip():
-            params["visualPrompt"] = prompt.strip()
+        if stored_prompt:
+            params["visualPrompt"] = stored_prompt
             if not str(params.get("visualImage") or "").strip():
-                params["visualImage"] = prompt.strip()
+                params["visualImage"] = stored_prompt
         asset.params = params
 
     await db.commit()
@@ -1728,6 +1675,7 @@ async def apply_fragment_video_assets(
     attempt_limit: int = 3,
     task_result: "TaskResult | None" = None,
     provider_task_id: str | None = None,
+    model_id: str | None = None,
 ) -> DramaEpisodeFragment:
     from app.services import storage as storage_svc
     from app.services.ffmpeg_compose import extract_video_last_frame, extract_video_poster_frame
@@ -1794,11 +1742,25 @@ async def apply_fragment_video_assets(
         params["lastFrameUrl"] = last_frame_url
     fragment.params = params
     generate_audio = bool((fragment.params or {}).get("generate_audio", True))
+    # 计费 model：有入参则只用入参（禁止被站点默认盖掉）；空入参才与上游一致走 model_video
+    from app.services.tokenfree_pricing import canonicalize_channel_model_id
+
+    raw_billing = (
+        (model_id or "").strip()
+        or str((fragment.params or {}).get("model_id") or "").strip()
+        or str(((fragment.params or {}).get("videoOptions") or {}).get("model_id") or "").strip()
+    )
+    if raw_billing:
+        billing_model = canonicalize_channel_model_id(raw_billing) or raw_billing
+    else:
+        billing_model = canonicalize_channel_model_id(
+            str(settings.model_video or "").strip()
+        ) or "seedance-2.5"
     await record_seedance_video_usage(
         db,
         user_id=user.id,
         billing_key=seedance_billing_key(generate_audio=generate_audio),
-        model=settings.model_video,
+        model=billing_model,
         domain="drama",
         task_result=task_result,
         fallback_duration_sec=fragment.duration_sec,

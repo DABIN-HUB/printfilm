@@ -18,7 +18,8 @@ export const VIDEO_ASPECT_RATIO_OPTIONS: VideoAspectRatio[] = ['9:16', '16:9', '
 export const VIDEO_RESOLUTION_OPTIONS: VideoResolution[] = ['480p', '720p', '1080p']
 /** 目录未到 / 未知模型时的保守档（与后端 SAFE 一致） */
 export const SAFE_VIDEO_RESOLUTION_OPTIONS: VideoResolution[] = ['480p', '720p']
-export const VIDEO_DURATION_PRESETS = [5, 8, 10, 15] as const
+/** 时长快捷档；按模型 duration_min/max 过滤（2.0≤15，2.5≤30） */
+export const VIDEO_DURATION_PRESETS = [5, 8, 10, 15, 20, 25, 30] as const
 export const VIDEO_DURATION_MIN = 4
 export const VIDEO_DURATION_MAX = 30
 

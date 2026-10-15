@@ -2378,6 +2378,87 @@
   color: #6b7280;
 }
 
+.drama-outline-pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, #fefce8 0%, #f0fdf4 100%);
+  border: 1px solid rgba(202, 138, 4, 0.28);
+  border-radius: 14px;
+}
+
+.drama-outline-pipeline-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.drama-outline-pipeline-pulse {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #ca8a04;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 0 rgba(202, 138, 4, 0.45);
+  animation: drama-outline-pulse 1.4s ease-out infinite;
+}
+
+@keyframes drama-outline-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(202, 138, 4, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(202, 138, 4, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(202, 138, 4, 0);
+  }
+}
+
+.drama-outline-pipeline-main strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: #854d0e;
+}
+
+.drama-outline-pipeline-main p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #78716c;
+  line-height: 1.45;
+}
+
+.drama-outline-pipeline-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.drama-outline-pipeline-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #eab308, #22c55e);
+  transition: width 0.35s ease;
+}
+
+.drama-outline-pipeline-bar.is-indeterminate .drama-outline-pipeline-bar-fill {
+  width: 36%;
+  animation: drama-outline-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes drama-outline-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
 .drama-outline-chip-btn {
   height: 32px;
   padding: 0 12px;
@@ -2571,6 +2652,11 @@
 
 .drama-outline-ep-meta em.is-shot {
   color: #059669;
+  font-weight: 600;
+}
+
+.drama-outline-ep-meta em.is-waiting {
+  color: #ca8a04;
   font-weight: 600;
 }
 
@@ -6429,6 +6515,16 @@
   color: #fff;
   cursor: pointer;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+  touch-action: none;
+  user-select: none;
+}
+
+.drama-gen-fab-btn.is-draggable {
+  cursor: grab;
+}
+
+.drama-gen-fab-btn.is-draggable:active {
+  cursor: grabbing;
 }
 
 .drama-gen-fab-btn:hover {

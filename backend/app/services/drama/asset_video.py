@@ -169,11 +169,22 @@ async def generate_asset_video(
     }
     asset.params = params
 
+    # 计费 model 必须用本次实际提交的 model_id，禁止落成站点默认 seedance-2.0
+    from app.services.tokenfree_pricing import canonicalize_channel_model_id
+
+    # 有入参只用入参；空入参才与上游 resolve 一致走站点默认
+    raw_billing = (model_id or "").strip()
+    if raw_billing:
+        billing_model = canonicalize_channel_model_id(raw_billing) or raw_billing
+    else:
+        billing_model = canonicalize_channel_model_id(
+            str(settings.model_video or "").strip()
+        ) or "seedance-2.5"
     await record_seedance_video_usage(
         db,
         user_id=user.id,
         billing_key=seedance_billing_key(generate_audio=True),
-        model=settings.model_video,
+        model=billing_model,
         domain="drama",
         task_result=task_result,
         fallback_duration_sec=duration,

@@ -59,18 +59,16 @@ async def _local_usage_daily(
     return out
 
 
-async def _latest_used_quota_before(
+async def _yesterday_used_quota(
     db: AsyncSession,
     *,
-    before: date,
+    today: date,
 ) -> int | None:
-    """取 before 日之前最近一条快照里的累计 used_quota。"""
+    """只取「昨天」快照的累计 used_quota，避免跨多日缺口整段灌进今天。"""
+    yesterday = today - timedelta(days=1)
     row = (
         await db.execute(
-            select(UpstreamUsageDaily)
-            .where(UpstreamUsageDaily.usage_date < before)
-            .order_by(UpstreamUsageDaily.usage_date.desc())
-            .limit(1)
+            select(UpstreamUsageDaily).where(UpstreamUsageDaily.usage_date == yesterday)
         )
     ).scalar_one_or_none()
     if row is None:
@@ -85,13 +83,17 @@ async def _today_from_cumulative(
     used_quota: int,
     settings: Any,
 ) -> dict[str, Any]:
-    """当 New API 不按日返回用量时，用累计 used_quota 差分记到今天。"""
+    """当 New API 不按日返回用量时，用累计 used_quota 差分记到今天。
+
+    基线仅允许：今日已有 day_start，或昨天快照的 used_quota。
+    禁止用更早日期做差分，否则 force sync 会把数周消耗一次性算进今天。
+    """
     existing = (
         await db.execute(select(UpstreamUsageDaily).where(UpstreamUsageDaily.usage_date == today))
     ).scalar_one_or_none()
     baseline = day_start_used_quota_from_raw_json(existing.raw_json if existing else None)
     if baseline is None:
-        baseline = await _latest_used_quota_before(db, before=today)
+        baseline = await _yesterday_used_quota(db, today=today)
     if baseline is None:
         return {
             "quota": 0,

@@ -143,14 +143,17 @@ def _bootstrap_channels_from_env(settings: Settings | None = None) -> list[Syste
 
 
 def _seedance_logical_meta(upstream: str) -> tuple[str, str]:
-    """按接入点 ID 推断 Seedance 逻辑模型（2.0 vs 2.5 vs Mini）。"""
+    """按接入点 ID 推断 Seedance 逻辑模型（2.0 vs 2.5 vs Mini）；id 与 TokenFree 点分目录对齐。"""
     mid = (upstream or "").strip().lower()
     if "mini" in mid:
-        return "seedance-2-0-mini", "Seedance 2.0 Mini"
+        # TokenFree→Ark mini 未开通，逻辑名并入 2.0
+        return "seedance-2.0", "Seedance 2.0"
+    if "fast" in mid:
+        return "seedance-2.0-fast", "Seedance 2.0 Fast"
     if any(token in mid for token in ("2-5", "2.5", "260628")):
         return "seedance-2.5", "Seedance 2.5"
     if any(token in mid for token in ("2-0", "2.0", "260128", "seedance-2")):
-        return "seedance-2", "Seedance 2"
+        return "seedance-2.0", "Seedance 2.0"
     return "seedance-2.5", "Seedance 2.5"
 
 
@@ -272,7 +275,7 @@ def _bootstrap_logical_from_channels(channels: list[SystemModelChannel]) -> tupl
     if settings.model_video:
         default_video, _ = _seedance_logical_meta(settings.model_video)
     elif settings.model_video_2:
-        default_video = "seedance-2"
+        default_video = "seedance-2.0"
     synced = synchronize_logical_models_with_channels(logical_models, channels)
     merged = _merge_friendly_alias_models(synced, alias_models)
     # 默认图模 = 渠道/价目真实名（如 seedream-5-0-pro）
@@ -377,7 +380,6 @@ async def _ensure_tokenfree_channel(db: AsyncSession, existing: list[SystemModel
         TOKENFREE_CHANNEL_NAME,
         pick_migratable_api_key,
     )
-    from app.services.tokenfree_pricing import canonicalize_channel_models
 
     runtime = [_channel_row_to_runtime(row) for row in existing]
     migrated_key = pick_migratable_api_key(runtime)
@@ -396,24 +398,12 @@ async def _ensure_tokenfree_channel(db: AsyncSession, existing: list[SystemModel
     if not current_key and migrated_key:
         token_row.api_key_ciphertext = _encrypt_secret(migrated_key)
         current_key = migrated_key
-    src = get_settings()
-    env_models = canonicalize_channel_models(
-        [
-            src.model_llm,
-            src.model_image,
-            src.model_image_45,
-            src.model_video,
-            src.model_video_2,
-            src.model_audio,
-        ]
-    )
-    if not token_row.models:
-        token_row.models = env_models
-    else:
-        # 已有 DB 清单只折叠别名，不再把 .env 模型并回去
-        merged = canonicalize_channel_models(token_row.models)
-        if merged != list(token_row.models or []):
-            token_row.models = merged
+    from app.services.media_model_presets import all_preset_channel_models
+
+    # 渠道 models 固定为站点预设并集（含 gpt-image-2 / 仅 qwen-tts）
+    preset = all_preset_channel_models()
+    if list(token_row.models or []) != preset:
+        token_row.models = preset
     for row in existing:
         if row.id != TOKENFREE_CHANNEL_ID:
             row.enabled = False
@@ -485,7 +475,7 @@ async def _compose_runtime_state(db: AsyncSession) -> tuple[list[SystemModelChan
         [_channel_row_to_admin(row) for row in (await db.execute(select(SystemModelChannelRow))).scalars().all()]
     )
     # 仅合并视频 Seedance 短名；图模一律用 TokenFree 渠道真实 id，不做 seedream-5.0 换绑
-    alias_ids = {"seedance-2.5", "seedance-2"}
+    alias_ids = {"seedance-2.5", "seedance-2.0", "seedance-2", "seedance-2.0-mini", "seedance-2.0-fast"}
     logical_models = _merge_friendly_alias_models(
         logical_models,
         [model for model in boot_logical if model.id in alias_ids],
@@ -497,6 +487,17 @@ async def _compose_runtime_state(db: AsyncSession) -> tuple[list[SystemModelChan
     image_default = _TOKENFREE_IMAGE_IDS.get(image_default.lower(), image_default)
     if image_default:
         default_models = default_models.model_copy(update={"image_model": image_default})
+    from app.services.media_model_presets import clamp_default_to_preset
+
+    # 启动/读缓存时钳回预设（配音 gemini→qwen；非法图模→Seedream Pro 等）
+    default_models = default_models.model_copy(
+        update={
+            "text_model": clamp_default_to_preset("text", default_models.text_model),
+            "image_model": clamp_default_to_preset("image", default_models.image_model),
+            "video_model": clamp_default_to_preset("video", default_models.video_model),
+            "audio_model": clamp_default_to_preset("audio", default_models.audio_model),
+        }
+    )
     default_models = normalize_default_models(default_models, logical_models, channels)
     flat = _effective_flat(_decrypt_flat_config(config))
     from app.services.tokenfree_gateway import apply_tokenfree_flat_overlay
@@ -770,7 +771,7 @@ async def patch_admin_routing_settings(
         pass
     synced = synchronize_logical_models_with_channels(logical_models, channels_after)
     bootstrapped, boot_defaults = _bootstrap_logical_from_channels(channels_after)
-    alias_ids = {"seedance-2.5", "seedance-2"}
+    alias_ids = {"seedance-2.5", "seedance-2.0", "seedance-2", "seedance-2.0-mini", "seedance-2.0-fast"}
     logical_models = _merge_friendly_alias_models(
         synced,
         [model for model in bootstrapped if model.id in alias_ids],
@@ -782,7 +783,7 @@ async def patch_admin_routing_settings(
         applied.append("default_models")
     from app.services.media_model_presets import clamp_default_to_preset
 
-    # 四类默认强制落在预设内（配音仅 gemini-3.1-flash-tts）
+    # 四类默认强制落在预设内（配音仅 qwen-tts-2025-05-22）
     defaults = defaults.model_copy(
         update={
             "text_model": clamp_default_to_preset("text", defaults.text_model),

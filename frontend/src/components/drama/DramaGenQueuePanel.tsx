@@ -5,6 +5,7 @@ import { dramaApi } from '../../api/drama'
 import { DramaGenTaskDetail } from './DramaGenTaskDetail'
 import { formatDramaGenError } from '../../lib/dramaGenError'
 import BillingTopupLink from '../billing/BillingTopupLink'
+import { useFabDragPosition } from '../../hooks/useFabDragPosition'
 import {
   clearFinishedDramaGenJobs,
   ensureEpisodeVideoStatusPoll,
@@ -16,6 +17,7 @@ import {
 import '../../pages/drama/drama.css'
 
 const OPEN_STORAGE_KEY = 'drama-gen-queue-fab-open'
+const POS_STORAGE_KEY = 'drama-gen-queue-fab-pos'
 
 const STATUS_LABEL: Record<string, string> = {
   queued: '排队中',
@@ -57,6 +59,11 @@ export function DramaGenQueuePanel() {
   const queue = useDramaGenQueue()
   const [open, setOpen] = useState(readOpenPreference)
   const [detailJob, setDetailJob] = useState<DramaGenJob | null>(null)
+  const { style: fabStyle, bindDrag, consumeDragSuppressClick } = useFabDragPosition(
+    POS_STORAGE_KEY,
+    { right: 20, bottom: 96 },
+    56,
+  )
 
   const active = useMemo(
     () => queue.filter((j) => j.status === 'queued' || j.status === 'running'),
@@ -115,8 +122,9 @@ export function DramaGenQueuePanel() {
   }, [queue, detailJob])
 
   const toggleOpen = useCallback(() => {
+    if (consumeDragSuppressClick()) return
     setOpen((prev) => !prev)
-  }, [])
+  }, [consumeDragSuppressClick])
 
   const close = useCallback(() => {
     setOpen(false)
@@ -137,7 +145,7 @@ export function DramaGenQueuePanel() {
   const badgeCount = active.length
 
   return (
-    <div className="drama-gen-fab-root">
+    <div className="drama-gen-fab-root is-draggable" style={fabStyle}>
       {open ? (
         <div className="drama-gen-fab-panel" role="dialog" aria-label="生成队列">
           {detailJob ? (
@@ -269,11 +277,12 @@ export function DramaGenQueuePanel() {
 
       <button
         type="button"
-        className={`drama-gen-fab-btn${active.length > 0 ? ' is-busy' : ''}${failed.length > 0 && active.length === 0 ? ' is-failed' : ''}`}
+        className={`drama-gen-fab-btn is-draggable${active.length > 0 ? ' is-busy' : ''}${failed.length > 0 && active.length === 0 ? ' is-failed' : ''}`}
         onClick={toggleOpen}
-        title={open ? '收起生成队列' : '展开生成队列'}
+        title={open ? '收起生成队列（可拖动）' : '展开生成队列（可拖动）'}
         aria-expanded={open}
         aria-label="生成队列"
+        {...bindDrag}
       >
         <Layers size={22} strokeWidth={1.75} aria-hidden />
         {badgeCount > 0 ? <span className="drama-gen-fab-badge">{badgeCount}</span> : null}
