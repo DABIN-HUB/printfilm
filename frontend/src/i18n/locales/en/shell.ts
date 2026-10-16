@@ -2,9 +2,9 @@
 
 export const enShell = {
   meta: {
-    title: 'PRINTFILM · AI short video',
+    title: '小斌opc · AI short video',
     description:
-      'PRINTFILM: turn scripts into episodic AI dramas, or offers into AI short videos.',
+      '小斌opc: turn scripts into episodic AI dramas, or offers into AI short videos.',
   },
   common: {
     comingSoon: 'Coming soon',
@@ -54,8 +54,6 @@ export const enShell = {
     pricing: 'Pricing',
     help: 'Help',
     helpCenter: 'Help center',
-    github: 'GitHub',
-    githubTitle: 'Open source on GitHub',
     login: 'Sign in',
     startCreate: 'Start creating',
     profile: 'Account',
@@ -72,25 +70,22 @@ export const enShell = {
     privacy: 'Privacy',
     contact: 'Contact',
     help: 'Help',
-    github: 'GitHub',
     links: 'Footer links',
   },
   wechatGroup: {
-    short: 'WeChat',
-    open: 'Join WeChat user group',
-    title: 'printfilm user group',
-    lead: 'Short drama tips · deploy help · templates',
-    idLabel: 'WeChat ID',
-    copy: 'Copy',
-    copied: 'Copied',
-    tip: 'Add WeChat ID gitpp88 with note “join group” and we will invite you.',
+    short: 'WeChat QR',
+    open: 'Open WeChat QR code',
+    title: 'Add on WeChat',
+    lead: 'Scan to add me as a friend',
+    qrAlt: 'WeChat QR code',
+    scanTip: 'Scan to add me as a friend.',
   },
   auth: {
     loginTitle: 'Back to the studio',
     registerTitle: 'Create a creator account',
     forgotTitle: 'Reset your password',
     resetTitle: 'Choose a new password',
-    lede: 'PRINTFILM · AI drama and AI short video',
+    lede: '小斌opc · AI drama and AI short video',
     nickname: 'Display name',
     email: 'Email',
     password: 'Password',

@@ -1,11 +1,10 @@
-/** 全站右下角：加微信号入群（展示微信号，可一键复制；可拖动） */
+/** 全站右下角：微信二维码浮窗（可拖动） */
 import { useEffect, useRef, useState } from 'react'
-import { Check, Copy, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { useFabDragPosition } from '../../hooks/useFabDragPosition'
 
-/** 社区加群微信号（不加图片二维码） */
-const WECHAT_ID = 'gitpp88'
+/** 右下角微信二维码浮窗的位置记忆键 */
 const POS_STORAGE_KEY = 'pf-wx-group-fab-pos'
 
 /** 简易微信气泡图标 */
@@ -20,12 +19,7 @@ function WeChatIcon({ size = 22 }: { size?: number }) {
 
 export default function WeChatGroupFab() {
   const { t } = useI18n()
-  /*
-   * open 浮层是否展开
-   * copied 复制成功短暂态
-   */
   const [open, setOpen] = useState(false)
-  const [copied, setCopied] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const { style: fabStyle, bindDrag, consumeDragSuppressClick } = useFabDragPosition(
     POS_STORAGE_KEY,
@@ -52,17 +46,6 @@ export default function WeChatGroupFab() {
     }
   }, [open])
 
-  // 复制微信号到剪贴板
-  async function copyWechatId() {
-    try {
-      await navigator.clipboard.writeText(WECHAT_ID)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1800)
-    } catch {
-      /* 忽略剪贴板失败，用户仍可手动选中复制 */
-    }
-  }
-
   return (
     <div className="pf-wx-fab-root is-draggable" ref={rootRef} style={fabStyle}>
       {open ? (
@@ -81,20 +64,8 @@ export default function WeChatGroupFab() {
               <X size={16} strokeWidth={2} aria-hidden />
             </button>
           </header>
-          <div className="pf-wx-fab-id">
-            <span className="pf-wx-fab-id-label">{t('wechatGroup.idLabel')}</span>
-            <code className="pf-wx-fab-id-value">{WECHAT_ID}</code>
-            <button
-              type="button"
-              className="pf-wx-fab-copy"
-              onClick={() => void copyWechatId()}
-              aria-label={copied ? t('wechatGroup.copied') : t('wechatGroup.copy')}
-            >
-              {copied ? <Check size={14} strokeWidth={2.2} aria-hidden /> : <Copy size={14} strokeWidth={2} aria-hidden />}
-              <span>{copied ? t('wechatGroup.copied') : t('wechatGroup.copy')}</span>
-            </button>
-          </div>
-          <p className="pf-wx-fab-tip">{t('wechatGroup.tip')}</p>
+          <img className="pf-wx-fab-qr" src="/wechat-qr.png" alt={t('wechatGroup.qrAlt')} />
+          <p className="pf-wx-fab-tip">{t('wechatGroup.scanTip')}</p>
         </div>
       ) : null}
       <button

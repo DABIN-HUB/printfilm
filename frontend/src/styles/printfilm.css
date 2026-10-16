@@ -1,4 +1,4 @@
-/* PRINTFILM SaaS shell & page layouts */
+/* 小斌opc SaaS shell & page layouts */
 
 .pf-shell {
   min-height: 100vh;
@@ -104,29 +104,6 @@
 }
 
 .pf-nav-help-btn:hover {
-  color: var(--pf-ink);
-}
-
-.pf-nav-github {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  height: 32px;
-  padding: 0 0.7rem 0 0.55rem;
-  border: 1px solid var(--pf-line);
-  border-radius: 999px;
-  background: #fff;
-  color: var(--pf-ink);
-  font-size: 0.82rem;
-  font-weight: 650;
-  text-decoration: none;
-  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
-}
-
-.pf-nav-github:hover {
-  border-color: #9fd400;
-  background: rgba(182, 255, 0, 0.28);
-  box-shadow: 0 0 0 3px rgba(182, 255, 0, 0.18);
   color: var(--pf-ink);
 }
 
@@ -453,26 +430,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-}
-
-.pf-land-github {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-top: 1.05rem;
-  color: var(--pf-ink);
-  font-size: 0.92rem;
-  font-weight: 650;
-  text-decoration: none;
-  border-bottom: 2px solid rgba(182, 255, 0, 0.85);
-  padding-bottom: 0.12rem;
-  width: fit-content;
-  transition: color 0.15s ease, border-color 0.15s ease, gap 0.15s ease;
-}
-
-.pf-land-github:hover {
-  gap: 0.6rem;
-  border-bottom-color: var(--pf-lime);
 }
 
 .pf-land-frames {
@@ -6971,16 +6928,6 @@ button.pf-shot-editable:disabled {
     display: none;
   }
 
-  .pf-nav-github span {
-    display: none;
-  }
-
-  .pf-nav-github {
-    width: 32px;
-    padding: 0;
-    justify-content: center;
-  }
-
   .pf-nav-burger {
     display: inline-flex;
   }
@@ -7240,47 +7187,14 @@ button.pf-shot-editable:disabled {
   color: var(--pf-ink);
 }
 
-.pf-wx-fab-id {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.45rem 0.65rem;
-  padding: 0.75rem 0.85rem;
-  border-radius: 12px;
-  background: #fafafa;
-  border: 1px solid var(--pf-line);
-}
-
-.pf-wx-fab-id-label {
-  font-size: 0.75rem;
-  color: var(--pf-muted);
-}
-
-.pf-wx-fab-id-value {
-  flex: 1 1 auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 1.05rem;
-  font-weight: 650;
-  letter-spacing: 0.02em;
-  color: var(--pf-ink);
-}
-
-.pf-wx-fab-copy {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  margin-left: auto;
-  padding: 0.35rem 0.65rem;
-  border: 1px solid var(--pf-line);
-  border-radius: 8px;
+.pf-wx-fab-qr {
+  display: block;
+  width: 250px;
+  height: 250px;
+  object-fit: cover;
+  margin: 0 auto;
+  border-radius: 10px;
   background: #fff;
-  color: var(--pf-ink);
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-
-.pf-wx-fab-copy:hover {
-  background: var(--pf-bg);
 }
 
 .pf-wx-fab-tip {

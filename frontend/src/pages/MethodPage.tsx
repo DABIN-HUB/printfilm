@@ -65,8 +65,8 @@ export default function MethodPage() {
     headline: copy.jsonLdHeadline,
     description: copy.metaDescription,
     inLanguage: locale === 'zh' ? 'zh-CN' : 'en',
-    author: { '@type': 'Organization', name: 'PRINTFILM' },
-    publisher: { '@type': 'Organization', name: 'PRINTFILM' },
+    author: { '@type': 'Organization', name: '小斌opc' },
+    publisher: { '@type': 'Organization', name: '小斌opc' },
     mainEntityOfPage: { '@type': 'WebPage', '@id': PAGE_URL },
     about: copy.toc.map((item) => ({ '@type': 'Thing', name: item.label })),
   }
@@ -82,7 +82,7 @@ export default function MethodPage() {
         <a className="pf-method-brand" href={METHOD_START_URL} rel="noopener noreferrer">
           <img src="/logo.svg" alt="" />
           <span className="pf-method-word">
-            <strong>PRINTFILM</strong>
+            <strong>小斌opc</strong>
             <span>{copy.brandLine}</span>
           </span>
         </a>

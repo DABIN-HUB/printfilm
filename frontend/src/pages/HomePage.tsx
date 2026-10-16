@@ -1,15 +1,13 @@
-/** PRINTFILM 官网首页：产品主张、漫剧/科普入口、成片流程与工具 */
+/** 小斌opc 官网首页：产品主张、漫剧/科普入口、成片流程与工具 */
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ArrowRight } from 'lucide-react'
 import AppShell from '../components/layout/AppShell'
 import Button from '../components/ui/Button'
-import { IconGithub } from '../components/ui/Icons'
 import ComingSoon from '../components/ui/ComingSoon'
 import CreateChoiceModal from '../components/ui/CreateChoiceModal'
 import { useI18n } from '../i18n'
 import { getDramaImageStylePreviewUrl } from '../lib/dramaImageStylePreviews'
-import { GITHUB_REPO_URL } from '../lib/siteLinks'
 import { PRODUCT_ICONS, localizeToolDefs } from '../lib/toolsCatalog'
 
 export default function HomePage() {
@@ -39,7 +37,7 @@ export default function HomePage() {
     <AppShell active="home" hideFooter>
       <section className="pf-land-hero">
         <div className="pf-land-hero-copy">
-          <p className="pf-land-kicker">PRINTFILM</p>
+          <p className="pf-land-kicker">小斌opc</p>
           <h1>
             {t('home.headlineBefore')}
             <br />
@@ -56,16 +54,6 @@ export default function HomePage() {
               <ArrowRight size={16} strokeWidth={2} aria-hidden />
             </Button>
           </div>
-          <a
-            className="pf-land-github"
-            href={GITHUB_REPO_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <IconGithub size={16} />
-            <span>{t('home.githubCta')}</span>
-            <ArrowRight size={14} strokeWidth={2.2} aria-hidden />
-          </a>
         </div>
         <div className="pf-land-frames" aria-hidden>
           <figure className="pf-land-frame is-drama">
@@ -216,7 +204,7 @@ export default function HomePage() {
 
       <footer className="pf-land-foot">
         <div className="pf-land-foot-brand">
-          <strong>PRINTFILM</strong>
+          <strong>小斌opc</strong>
           <p>{t('home.footBrand')}</p>
         </div>
         <nav className="pf-land-foot-nav" aria-label={t('home.footNav')}>
@@ -229,11 +217,8 @@ export default function HomePage() {
           <Link to="/terms">{t('footer.terms')}</Link>
           <Link to="/privacy">{t('footer.privacy')}</Link>
           <Link to="/contact">{t('footer.contact')}</Link>
-          <a href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer">
-            {t('footer.github')}
-          </a>
         </nav>
-        <p className="pf-land-copy">© {new Date().getFullYear()} PRINTFILM. All rights reserved.</p>
+        <p className="pf-land-copy">© {new Date().getFullYear()} 小斌opc. All rights reserved.</p>
       </footer>
 
       <CreateChoiceModal open={createOpen} onClose={() => setCreateOpen(false)} />

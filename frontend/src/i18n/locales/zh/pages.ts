@@ -7,7 +7,6 @@ export const zhPages = {
     lede: 'AI 漫剧从剧本到分集成片，AI短视频从卖点到分镜成片。一套工作台，两种出片方式。',
     startCreate: '开始创作',
     browseTools: '浏览工具',
-    githubCta: '开源仓库 · 在 GitHub 查看',
     products: '主产品',
     dramaTitle: 'AI 漫剧',
     dramaFor: '给短剧创作者',
@@ -161,7 +160,7 @@ export const zhPages = {
     introLink: '帮助中心',
     introSuffix: '。',
     formTitle: '留言反馈',
-    formLead: '填写后将打开您的邮件客户端，预填发往 support@printfilm.com 的草稿，请确认后发送。',
+    formLead: '填写后将打开您的邮件客户端，预填发往 958070007@qq.com 的草稿，请确认后发送。',
     topic: '问题类型',
     email: '联系邮箱',
     emailPlaceholder: '便于我们回复',
@@ -181,8 +180,8 @@ export const zhPages = {
       {
         title: '邮箱支持',
         desc: '工作日一般 1–2 个工作日内回复；请附上账号邮箱与订单号（如有）。',
-        href: 'mailto:support@printfilm.com',
-        actionLabel: 'support@printfilm.com',
+        href: 'mailto:958070007@qq.com',
+        actionLabel: '958070007@qq.com',
       },
       {
         title: '帮助中心',
@@ -193,14 +192,8 @@ export const zhPages = {
       {
         title: '企业合作 / 对公转账',
         desc: '企业批量充值、API 合作或发票需求，请邮件说明公司名称与需求，我们会安排对接。',
-        href: 'mailto:support@printfilm.com?subject=PRINTFILM%20Enterprise',
+        href: 'mailto:958070007@qq.com?subject=小斌opc%20Enterprise',
         actionLabel: '发送合作邮件',
-      },
-      {
-        title: '开源仓库',
-        desc: '源码、Issue 与部署说明见 GitHub。欢迎 Star、提问题或贡献。',
-        href: 'https://github.com/yi1108/printfilm',
-        actionLabel: 'github.com/yi1108/printfilm',
       },
     ],
     topics: ['账号与登录', '充值与到账', '创作任务异常', '下载与素材', '隐私与账号注销', '其他'],

@@ -7,7 +7,6 @@ export const enPages = {
     lede: 'AI drama from script to episodic film. AI short video from offer to storyboard to film. One studio, two ways to ship.',
     startCreate: 'Start creating',
     browseTools: 'Browse tools',
-    githubCta: 'Open source · View on GitHub',
     products: 'Products',
     dramaTitle: 'AI Drama',
     dramaFor: 'For short-drama makers',
@@ -161,7 +160,7 @@ export const enPages = {
     introLink: 'help center',
     introSuffix: ' first.',
     formTitle: 'Send feedback',
-    formLead: 'Submit opens your mail client with a draft to support@printfilm.com. Please send it after you review.',
+    formLead: 'Submit opens your mail client with a draft to 958070007@qq.com. Please send it after you review.',
     topic: 'Topic',
     email: 'Your email',
     emailPlaceholder: 'So we can reply',
@@ -181,8 +180,8 @@ export const enPages = {
       {
         title: 'Email support',
         desc: 'We usually reply in 1–2 business days. Please include your account email and order ID if you have one.',
-        href: 'mailto:support@printfilm.com',
-        actionLabel: 'support@printfilm.com',
+        href: 'mailto:958070007@qq.com',
+        actionLabel: '958070007@qq.com',
       },
       {
         title: 'Help center',
@@ -193,14 +192,8 @@ export const enPages = {
       {
         title: 'Enterprise / wire transfer',
         desc: 'For bulk credits, API partnerships, or invoices, email your company name and request.',
-        href: 'mailto:support@printfilm.com?subject=PRINTFILM%20Enterprise',
+        href: 'mailto:958070007@qq.com?subject=小斌opc%20Enterprise',
         actionLabel: 'Email partnerships',
-      },
-      {
-        title: 'Open source',
-        desc: 'Source, issues, and deployment docs are on GitHub. Stars, issues, and PRs welcome.',
-        href: 'https://github.com/yi1108/printfilm',
-        actionLabel: 'github.com/yi1108/printfilm',
       },
     ],
     topics: [
